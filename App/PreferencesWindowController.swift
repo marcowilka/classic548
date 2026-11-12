@@ -7,16 +7,22 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
     private let nameField = NSTextField()
     private let hostField = NSTextField()
     private let portField = NSTextField()
-    private let volumeField = NSTextField()
+    private let volumePopup = NSPopUpButton()
+    private let refreshVolumesButton = NSButton()
     private let userField = NSTextField()
     private let passwordField = NSSecureTextField()
     private let autoConnectButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var selectedID: UUID?
+    private var knownVolumes: [String] = []
+    /// Host:port the current `knownVolumes` were fetched for (nil = none / stale).
+    private var knownVolumesIdentity: String?
+    private var volumeFetchGeneration = 0
+    private var isFetchingVolumes = false
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 420),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -26,6 +32,8 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         self.init(window: window)
         window.contentView = buildContent()
         reload()
+        rebuildVolumePopup(preserving: nil)
+        updateVolumeFetchControls()
     }
 
     func showWindow(prefill: Bookmark?) {
@@ -34,6 +42,9 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         if let prefill {
             applyForm(prefill)
             selectedID = nil
+            passwordField.stringValue = ""
+            updateVolumeFetchControls()
+            // Volume list loads only after password Enter/Tab or Refresh — avoid failed logins.
         }
     }
 
@@ -65,7 +76,6 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = 10
-        form.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
         func labeledField(_ title: String, _ field: NSTextField) -> NSView {
             let row = NSStackView()
@@ -88,9 +98,34 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         form.addArrangedSubview(labeledField(L10n.displayName, nameField))
         form.addArrangedSubview(labeledField(L10n.host, hostField))
         form.addArrangedSubview(labeledField(L10n.port, portField))
-        form.addArrangedSubview(labeledField(L10n.volume, volumeField))
         form.addArrangedSubview(labeledField(L10n.username, userField))
         form.addArrangedSubview(labeledField(L10n.password, passwordField))
+
+        let volumeRow = NSStackView()
+        volumeRow.orientation = .horizontal
+        volumeRow.alignment = .centerY
+        volumeRow.spacing = 8
+        let volumeLabel = NSTextField(labelWithString: L10n.volume)
+        volumeLabel.alignment = .right
+        volumeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        volumeLabel.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        volumePopup.translatesAutoresizingMaskIntoConstraints = false
+        volumePopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        volumePopup.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        volumePopup.autoenablesItems = false
+        refreshVolumesButton.translatesAutoresizingMaskIntoConstraints = false
+        refreshVolumesButton.bezelStyle = .flexiblePush
+        refreshVolumesButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: L10n.refreshVolumes)
+        refreshVolumesButton.imagePosition = .imageOnly
+        refreshVolumesButton.toolTip = L10n.refreshVolumes
+        refreshVolumesButton.target = self
+        refreshVolumesButton.action = #selector(refreshVolumesClicked)
+        refreshVolumesButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        refreshVolumesButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        volumeRow.addArrangedSubview(volumeLabel)
+        volumeRow.addArrangedSubview(volumePopup)
+        volumeRow.addArrangedSubview(refreshVolumesButton)
+        form.addArrangedSubview(volumeRow)
 
         autoConnectButton.title = L10n.connectAtLogin
         launchAtLoginButton.title = L10n.launchAtLogin
@@ -114,7 +149,6 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         root.addSubview(removeButton)
         root.addSubview(connectButton)
 
-        // Wrapper so Auto Layout works inside the window content view.
         let container = NSView()
         container.addSubview(root)
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -124,8 +158,8 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             root.topAnchor.constraint(equalTo: container.topAnchor),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            root.widthAnchor.constraint(equalToConstant: 720),
-            root.heightAnchor.constraint(equalToConstant: 400),
+            root.widthAnchor.constraint(equalToConstant: 760),
+            root.heightAnchor.constraint(equalToConstant: 420),
 
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
@@ -144,8 +178,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             removeButton.centerYAnchor.constraint(equalTo: addButton.centerYAnchor),
             removeButton.heightAnchor.constraint(equalToConstant: 28),
 
-            // Right-align Connect with the form fields (label 130 + spacing 8 + field 260).
-            connectButton.trailingAnchor.constraint(equalTo: form.leadingAnchor, constant: 130 + 8 + 260),
+            connectButton.trailingAnchor.constraint(equalTo: form.leadingAnchor, constant: 130 + 8 + 260 + 8 + 32),
             connectButton.centerYAnchor.constraint(equalTo: addButton.centerYAnchor),
             connectButton.heightAnchor.constraint(equalToConstant: 28),
             connectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 100)
@@ -187,6 +220,25 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         return cell
     }
 
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        if field === hostField || field === portField || field === userField || field === passwordField {
+            // Keep refresh enabled state + placeholder in sync while typing credentials.
+            rebuildVolumePopup(preserving: selectedVolumeName.isEmpty ? nil : selectedVolumeName)
+        }
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        if field === hostField || field === portField {
+            discardStaleVolumesIfNeeded(preserving: selectedVolumeName)
+        }
+        updateVolumeFetchControls()
+        // Volume list only on password commit (Enter / Tab / focus loss) or Refresh — not per keystroke.
+        guard field === passwordField, canLoadVolumes else { return }
+        scheduleVolumeFetch(immediate: true)
+    }
+
     @objc private func selectionChanged() {
         let row = tableView.selectedRow
         guard row >= 0, row < bookmarks.count else { return }
@@ -199,24 +251,235 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             servers: servers,
             port: bookmark.port
         ) ?? ""
+        updateVolumeFetchControls()
+        rebuildVolumePopup(preserving: bookmark.volume)
     }
 
     private func applyForm(_ bookmark: Bookmark) {
         nameField.stringValue = bookmark.displayName
         hostField.stringValue = bookmark.host
         portField.stringValue = String(bookmark.port)
-        volumeField.stringValue = bookmark.volume
         userField.stringValue = bookmark.username
         autoConnectButton.state = bookmark.autoConnect ? .on : .off
+        discardStaleVolumesIfNeeded(preserving: bookmark.volume)
+        updateVolumeFetchControls()
+    }
+
+    private var selectedVolumeName: String {
+        guard let title = volumePopup.titleOfSelectedItem,
+              title != L10n.selectVolume,
+              title != L10n.loadingVolumes,
+              title != L10n.noVolumes,
+              title != L10n.enterCredentials
+        else { return "" }
+        return title
+    }
+
+    private var canLoadVolumes: Bool {
+        let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !host.isEmpty && !user.isEmpty && resolvedPassword() != nil
+    }
+
+    private func updateVolumeFetchControls() {
+        let ready = canLoadVolumes
+        refreshVolumesButton.isEnabled = ready && !isFetchingVolumes
+        refreshVolumesButton.toolTip = ready ? L10n.refreshVolumes : L10n.refreshNeedsCredentials
+    }
+
+    private func volumeIdentity(host: String, port: Int) -> String {
+        "\(host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()):\(port)"
+    }
+
+    private func currentVolumeIdentity() -> String {
+        let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(portField.stringValue) ?? 548
+        return volumeIdentity(host: host, port: port)
+    }
+
+    /// Drop volume names fetched for a different host/port; keep only the sticky selection.
+    private func discardStaleVolumesIfNeeded(preserving preferred: String?) {
+        let identity = currentVolumeIdentity()
+        if knownVolumesIdentity != identity {
+            knownVolumes = []
+            knownVolumesIdentity = nil
+        }
+        rebuildVolumePopup(preserving: preferred)
+    }
+
+    private func rebuildVolumePopup(preserving preferred: String?) {
+        let keep = preferred?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Never surface names that belong to another host.
+        let identity = currentVolumeIdentity()
+        let itemsFromServer = (knownVolumesIdentity == identity) ? knownVolumes : []
+        var items = itemsFromServer
+        if let keep, !keep.isEmpty, !items.contains(where: { $0.caseInsensitiveCompare(keep) == .orderedSame }) {
+            items.insert(keep, at: 0)
+        }
+
+        volumePopup.removeAllItems()
+        volumePopup.addItem(withTitle: L10n.selectVolume)
+        if isFetchingVolumes {
+            volumePopup.addItem(withTitle: L10n.loadingVolumes)
+            volumePopup.selectItem(at: 1)
+            volumePopup.isEnabled = false
+            updateVolumeFetchControls()
+            return
+        }
+
+        if !canLoadVolumes {
+            volumePopup.isEnabled = false
+            if items.isEmpty {
+                volumePopup.addItem(withTitle: L10n.enterCredentials)
+                volumePopup.selectItem(at: 1)
+            } else {
+                for name in items {
+                    volumePopup.addItem(withTitle: name)
+                }
+                if let keep, let idx = volumePopup.itemTitles.firstIndex(of: keep) {
+                    volumePopup.selectItem(at: idx)
+                } else {
+                    volumePopup.selectItem(at: 0)
+                }
+            }
+            updateVolumeFetchControls()
+            return
+        }
+
+        volumePopup.isEnabled = true
+        if items.isEmpty {
+            volumePopup.addItem(withTitle: L10n.noVolumes)
+            volumePopup.selectItem(at: 0)
+            updateVolumeFetchControls()
+            return
+        }
+
+        for name in items {
+            volumePopup.addItem(withTitle: name)
+        }
+        if let keep, let idx = volumePopup.itemTitles.firstIndex(of: keep) {
+            volumePopup.selectItem(at: idx)
+        } else if items.count == 1 {
+            volumePopup.selectItem(at: 1)
+        } else {
+            volumePopup.selectItem(at: 0)
+        }
+        updateVolumeFetchControls()
+    }
+
+    @objc private func refreshVolumesClicked() {
+        guard canLoadVolumes else {
+            updateVolumeFetchControls()
+            return
+        }
+        scheduleVolumeFetch(immediate: true, showAlertOnError: true)
+    }
+
+    private func scheduleVolumeFetch(immediate: Bool, showAlertOnError: Bool = false) {
+        volumeFetchGeneration += 1
+        let generation = volumeFetchGeneration
+        let delay: TimeInterval = immediate ? 0 : 0.35
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, generation == self.volumeFetchGeneration else { return }
+            self.fetchVolumes(generation: generation, showAlertOnError: showAlertOnError)
+        }
+    }
+
+    private func resolvedPassword() -> String? {
+        let typed = passwordField.stringValue
+        if !typed.isEmpty { return typed }
+        let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(portField.stringValue) ?? 548
+        guard !host.isEmpty, !user.isEmpty else { return nil }
+        let servers = [host, HostResolver.preferredAFPHost(host)]
+        return KeychainStore.password(account: user, servers: servers, port: port)
+    }
+
+    private func fetchVolumes(generation: Int, showAlertOnError: Bool) {
+        let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(portField.stringValue) ?? 548
+        let identity = volumeIdentity(host: host, port: port)
+        let preserving = selectedVolumeName.isEmpty ? nil : selectedVolumeName
+
+        guard let password = resolvedPassword(), !host.isEmpty, !user.isEmpty else {
+            discardStaleVolumesIfNeeded(preserving: preserving)
+            updateVolumeFetchControls()
+            return
+        }
+
+        isFetchingVolumes = true
+        updateVolumeFetchControls()
+        rebuildVolumePopup(preserving: preserving)
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: Result<[String], Error>
+            do {
+                let names = try AFPVolumeBrowser.listVolumes(
+                    host: host,
+                    port: port,
+                    username: user,
+                    password: password
+                )
+                result = .success(names)
+            } catch {
+                result = .failure(error)
+            }
+            await MainActor.run {
+                guard let self, generation == self.volumeFetchGeneration else { return }
+                self.isFetchingVolumes = false
+                // Host may have changed while the request was in flight.
+                guard self.currentVolumeIdentity() == identity else {
+                    self.discardStaleVolumesIfNeeded(preserving: self.selectedVolumeName)
+                    self.updateVolumeFetchControls()
+                    return
+                }
+                switch result {
+                case .success(let names):
+                    self.knownVolumes = names
+                    self.knownVolumesIdentity = identity
+                    self.rebuildVolumePopup(preserving: preserving)
+                    DiagnosticsLog.shared.info("Listed \(names.count) AFP volume(s) on \(host)")
+                case .failure(let error):
+                    self.discardStaleVolumesIfNeeded(preserving: preserving)
+                    let message = L10n.volumeLoadFailed(error.localizedDescription)
+                    DiagnosticsLog.shared.error(error, context: "listVolumes")
+                    if showAlertOnError {
+                        let alert = NSAlert()
+                        alert.messageText = L10n.volume
+                        alert.informativeText = message
+                        alert.alertStyle = .warning
+                        alert.addButton(withTitle: L10n.cancel)
+                        alert.runModal()
+                    }
+                }
+                self.updateVolumeFetchControls()
+            }
+        }
     }
 
     @objc private func saveBookmark() {
         let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let volume = volumeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let volume = selectedVolumeName
         guard !host.isEmpty, !volume.isEmpty else { return }
         let port = Int(portField.stringValue) ?? 548
+        let existing = BookmarkStore.shared.load()
+
+        // Identity is host+port+volume — same host with another volume is a new favorite.
+        let id: UUID
+        if let selectedID,
+           let selected = existing.first(where: { $0.id == selectedID }),
+           selected.matchesMountTarget(host: host, port: port, volume: volume) {
+            id = selectedID
+        } else if let match = existing.first(where: { $0.matchesMountTarget(host: host, port: port, volume: volume) }) {
+            id = match.id
+        } else {
+            id = UUID()
+        }
+
         let bookmark = Bookmark(
-            id: selectedID ?? UUID(),
+            id: id,
             displayName: nameField.stringValue,
             host: host,
             port: port,
@@ -236,14 +499,28 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         }
         selectedID = bookmark.id
         reload()
+        if let row = bookmarks.firstIndex(where: { $0.id == bookmark.id }) {
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
         NotificationCenter.default.post(name: .init("ClassicAFPBookmarksChanged"), object: nil)
     }
 
     @objc private func removeBookmark() {
         guard let selectedID else { return }
         if let bookmark = bookmarks.first(where: { $0.id == selectedID }) {
-            let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
-            KeychainStore.deletePassword(account: bookmark.username, servers: servers, port: bookmark.port)
+            let othersStillNeedPassword = BookmarkStore.shared.load().contains {
+                $0.id != selectedID
+                    && $0.port == bookmark.port
+                    && !$0.username.isEmpty
+                    && $0.username == bookmark.username
+                    && ($0.host.caseInsensitiveCompare(bookmark.host) == .orderedSame
+                        || HostResolver.preferredAFPHost($0.host)
+                            .caseInsensitiveCompare(HostResolver.preferredAFPHost(bookmark.host)) == .orderedSame)
+            }
+            if !othersStillNeedPassword {
+                let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
+                KeychainStore.deletePassword(account: bookmark.username, servers: servers, port: bookmark.port)
+            }
         }
         BookmarkStore.shared.remove(id: selectedID)
         self.selectedID = nil

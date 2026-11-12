@@ -21,6 +21,7 @@
 		4A46646A7A9117DFE57C9377 /* DiagnosticsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E394864BA29EA1888999B2 /* DiagnosticsWindowController.swift */; };
 		4C429189C238DFBE7BCBB43A /* AFPIPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC4D45143C2295E59660804 /* AFPIPC.swift */; };
 		4DAC295965C26A404646653D /* SystemMounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDED2FEBF285FB4435B4D0E /* SystemMounts.swift */; };
+		4E318C30FDCE51E594889E8C /* AFPVolumeBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF582326EE6CFDBCFF5119F /* AFPVolumeBrowser.swift */; };
 		541AE23654BE89A37E86E765 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99E0973521851997ECD174D9 /* StatusItemController.swift */; };
 		55841147D0BCBAF795F75E4C /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 0732CF1CAF89A566C53E4915 /* Localizable.xcstrings */; };
 		63A67DB43123453311A9C30E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A23B6B3C13AEC0F711DE6F9 /* AppDelegate.swift */; };
@@ -135,6 +136,7 @@
 		7FC4D45143C2295E59660804 /* AFPIPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AFPIPC.swift; sourceTree = "<group>"; };
 		7FDED2FEBF285FB4435B4D0E /* SystemMounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMounts.swift; sourceTree = "<group>"; };
 		8D6F5C7F0D6A241E659F47BF /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		8FF582326EE6CFDBCFF5119F /* AFPVolumeBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AFPVolumeBrowser.swift; sourceTree = "<group>"; };
 		95C68DDAEE0ECA51B7A349DF /* AFPFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AFPFSExtension.swift; sourceTree = "<group>"; };
 		99E0973521851997ECD174D9 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		9A18C6FC3AC8B79AD945DF1D /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 			children = (
 				7FC4D45143C2295E59660804 /* AFPIPC.swift */,
 				A6863AA925543C86032F4AA8 /* AFPSLTCPProxy.swift */,
+				8FF582326EE6CFDBCFF5119F /* AFPVolumeBrowser.swift */,
 				42816038F6535C71B7E7ED76 /* AppConstants.swift */,
 				1E4C94961E0FA1791D74AD3C /* BonjourBrowser.swift */,
 				76522CA398CB045DA8DCE939 /* Bookmark.swift */,
@@ -543,6 +546,7 @@
 			files = (
 				4C429189C238DFBE7BCBB43A /* AFPIPC.swift in Sources */,
 				214E84CF913AFF609DC270BB /* AFPSLTCPProxy.swift in Sources */,
+				4E318C30FDCE51E594889E8C /* AFPVolumeBrowser.swift in Sources */,
 				980C1E47D0503649AEAD34B2 /* AppConstants.swift in Sources */,
 				63A67DB43123453311A9C30E /* AppDelegate.swift in Sources */,
 				94CC7BC51737D5345EC04FD0 /* BonjourBrowser.swift in Sources */,
@@ -636,6 +640,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FSKitExtension/AFPFS.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = FSKitExtension/Info.plist;
@@ -643,6 +648,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = de.marcowilka.classic548.AFPFS;
 				PRODUCT_NAME = AFPFS;
 				SDKROOT = macosx;
@@ -714,6 +720,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FSKitExtension/AFPFS.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = FSKitExtension/Info.plist;
@@ -721,6 +728,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = de.marcowilka.classic548.AFPFS;
 				PRODUCT_NAME = AFPFS;
 				SDKROOT = macosx;
@@ -847,6 +855,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/ClassicAFP.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -855,6 +864,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../Helpers",
 				);
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = de.marcowilka.classic548;
 				PRODUCT_NAME = ClassicAFP;
 				SDKROOT = macosx;
@@ -867,6 +877,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/ClassicAFP.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -875,6 +886,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../Helpers",
 				);
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = de.marcowilka.classic548;
 				PRODUCT_NAME = ClassicAFP;
 				SDKROOT = macosx;

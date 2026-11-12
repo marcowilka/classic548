@@ -47,4 +47,15 @@ public struct Bookmark: Codable, Identifiable, Equatable, Sendable {
     public var afpURL: URL? {
         URL(string: afpURLString)
     }
+
+    /// Same AFP mount target (host + port + volume). Multiple favorites may share a host.
+    public func matchesMountTarget(host: String, port: Int, volume: String) -> Bool {
+        self.port == port
+            && self.host.caseInsensitiveCompare(host) == .orderedSame
+            && self.volume.caseInsensitiveCompare(volume) == .orderedSame
+    }
+
+    public func matchesMountTarget(_ other: Bookmark) -> Bool {
+        matchesMountTarget(host: other.host, port: other.port, volume: other.volume)
+    }
 }

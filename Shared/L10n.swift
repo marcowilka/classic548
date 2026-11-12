@@ -14,6 +14,13 @@ public enum L10n {
     public static var host: String { t("favorites.host") }
     public static var port: String { t("favorites.port") }
     public static var volume: String { t("favorites.volume") }
+    public static var selectVolume: String { t("favorites.selectVolume") }
+    public static var refreshVolumes: String { t("favorites.refreshVolumes") }
+    public static var refreshNeedsCredentials: String { t("favorites.refreshNeedsCredentials") }
+    public static var enterCredentials: String { t("favorites.enterCredentials") }
+    public static var loadingVolumes: String { t("favorites.loadingVolumes") }
+    public static var noVolumes: String { t("favorites.noVolumes") }
+    public static func volumeLoadFailed(_ detail: String) -> String { t("favorites.volumeLoadFailed", detail) }
     public static var username: String { t("favorites.username") }
     public static var password: String { t("favorites.password") }
     public static var connectAtLogin: String { t("favorites.connectAtLogin") }

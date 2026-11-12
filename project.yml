@@ -112,6 +112,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.marcowilka.classic548
         PRODUCT_NAME: ClassicAFP
+        MARKETING_VERSION: 1.0.1
+        CURRENT_PROJECT_VERSION: 2
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/ClassicAFP.entitlements
         LD_RUNPATH_SEARCH_PATHS:
@@ -184,6 +186,7 @@ targets:
           - SystemMounts.swift
           - AFPSLTCPProxy.swift
           - L10n.swift
+          - AFPVolumeBrowser.swift
     dependencies:
       - target: AFPBridge
         embed: true
@@ -191,6 +194,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.marcowilka.classic548.AFPFS
         PRODUCT_NAME: AFPFS
+        MARKETING_VERSION: 1.0.1
+        CURRENT_PROJECT_VERSION: 2
         INFOPLIST_FILE: FSKitExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: FSKitExtension/AFPFS.entitlements
         LD_RUNPATH_SEARCH_PATHS:
