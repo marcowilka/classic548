@@ -10,8 +10,9 @@
 #   SIGNING_DIR, DEVELOPMENT_TEAM, SIGN_IDENTITY,
 #   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER
 #
-# Outputs: dist/ClassicAFP-<version>-mac.dmg
+# Outputs: dist/ClassicAFP-<version>-mac.dmg (only the latest; older ClassicAFP-*-mac.dmg are removed)
 # Work dir: ~/Library/Caches/classic548-release (override with CLASSIC548_BUILD_WORK)
+# Note: dist/ is gitignored — DMGs never enter the git history.
 
 set -euo pipefail
 
@@ -220,7 +221,9 @@ strip_codesign_xattrs "${STAGE}/ClassicAFP.app"
 ln -s /Applications "${STAGE}/Applications"
 
 echo "==> Creating writable DMG for Finder layout"
-rm -f "${DMG_RW}" "${DMG_VERSIONED}"
+# Keep only the DMG from this run — drop previous ClassicAFP-*-mac.dmg in dist/.
+rm -f "${DMG_RW}"
+find "${DIST}" -maxdepth 1 -type f -name 'ClassicAFP-*-mac.dmg' -delete 2>/dev/null || true
 if [[ -d "${DMG_MOUNT}" ]]; then
   hdiutil detach "${DMG_MOUNT}" -force >/dev/null 2>&1 || true
 fi
