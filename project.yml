@@ -1,0 +1,226 @@
+name: ClassicAFP
+options:
+  bundleIdPrefix: de.marcowilka
+  deploymentTarget:
+    macOS: "27.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "16.0"
+  knownRegions:
+    - en
+    - Base
+    - de
+    - it
+    - nl
+    - es
+    - fr
+    - nb
+    - sv
+    - pl
+    - cs
+    - da
+  developmentRegion: en
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "27.0"
+    CLANG_ENABLE_MODULES: YES
+    ENABLE_HARDENED_RUNTIME: YES
+  configs:
+    Release:
+      # Developer ID is applied at exportArchive time by Scripts/build-macos-dmg.sh.
+      SWIFT_COMPILATION_MODE: wholemodule
+targets:
+  AFPBridge:
+    type: framework
+    platform: macOS
+    sources:
+      - path: AFPBridge
+        excludes:
+          - include/**
+          - AFPBridge-Bridging-Header.h
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.marcowilka.classic548.AFPBridge
+        PRODUCT_NAME: AFPBridge
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        MACH_O_TYPE: mh_dylib
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/AFPBridge/include
+          - $(SRCROOT)/AFPBridge
+        SWIFT_INCLUDE_PATHS:
+          - $(SRCROOT)/AFPBridge/include
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/Helpers
+        OTHER_LDFLAGS:
+          - -lafpsl.1
+          - -lafpclient.1
+          - -lgcrypt.20
+          - -lgpg-error.0
+          - -lintl.8
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "@loader_path/Frameworks"
+          - "@loader_path"
+        CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES: YES
+        SWIFT_OBJC_BRIDGING_HEADER: AFPBridge/AFPBridge-Bridging-Header.h
+        SWIFT_INSTALL_OBJC_HEADER: YES
+        PUBLIC_HEADERS_FOLDER_PATH: Headers
+    headers:
+      - path: AFPBridge/AFPShim.h
+        public: true
+
+    postCompileScripts:
+      - name: Embed Netatalk dylibs into AFPBridge
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          export COPYFILE_DISABLE=1
+          DEST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.framework/Versions/A/Frameworks"
+          mkdir -p "$DEST"
+          for lib in libafpsl.1.dylib libafpclient.1.dylib libgcrypt.20.dylib libgpg-error.0.dylib libintl.8.dylib; do
+            cp -fX "${SRCROOT}/Helpers/$lib" "$DEST/"
+          done
+          "${SRCROOT}/Scripts/sign-nested-netatalk.sh" \
+            "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.framework" \
+            "${EXPANDED_CODE_SIGN_IDENTITY:-}"
+
+  ClassicAFP:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: Shared
+      - path: Resources/Assets.xcassets
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
+        optional: true
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+    dependencies:
+      - target: AFPBridge
+        embed: true
+      - target: AFPFS
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.marcowilka.classic548
+        PRODUCT_NAME: ClassicAFP
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/ClassicAFP.entitlements
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "@executable_path/../Helpers"
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleIconFile: AppIcon
+        ENABLE_DEBUG_DYLIB: NO
+    postCompileScripts:
+      - name: Embed afpsld helper
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          export COPYFILE_DISABLE=1
+          HELPERS="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Helpers"
+          mkdir -p "$HELPERS"
+          cp -fX "${SRCROOT}/Helpers/afpsld" "$HELPERS/"
+          cp -fX "${SRCROOT}/Helpers/"*.dylib "$HELPERS/"
+          install_name_tool -add_rpath @executable_path "${HELPERS}/afpsld" 2>/dev/null || true
+          IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+          SIGN=(--force --timestamp=none --strip-disallowed-xattrs)
+          if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
+            codesign "${SIGN[@]}" --sign - "${HELPERS}/afpsld" "${HELPERS}/"*.dylib
+          else
+            codesign "${SIGN[@]}" --sign "$IDENTITY" --options runtime "${HELPERS}/afpsld"
+            codesign "${SIGN[@]}" --sign "$IDENTITY" --options runtime "${HELPERS}/"*.dylib
+          fi
+      - name: Install full AppIcon.icns
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          # actool often emits an incomplete AppIcon.icns; replace with iconutil build.
+          ICNS="${SRCROOT}/Resources/AppIcon.icns"
+          DEST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/AppIcon.icns"
+          if [[ -f "$ICNS" ]]; then
+            mkdir -p "$(dirname "$DEST")"
+            cp -fX "$ICNS" "$DEST"
+          fi
+    postBuildScripts:
+      - name: Resign nested Netatalk in app + appex
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          # Runs before Xcode's final CodeSign; only fix nested Netatalk Team IDs.
+          APP="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app"
+          IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+          "${SRCROOT}/Scripts/sign-nested-netatalk.sh" \
+            "${APP}/Contents/Frameworks/AFPBridge.framework" \
+            "$IDENTITY"
+          APPEX_FW="${APP}/Contents/Extensions/AFPFS.appex/Contents/Frameworks/AFPBridge.framework"
+          if [[ -d "$APPEX_FW" ]]; then
+            "${SRCROOT}/Scripts/sign-nested-netatalk.sh" "$APPEX_FW" "$IDENTITY"
+          fi
+
+  AFPFS:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: FSKitExtension
+      - path: Shared
+        excludes:
+          - BookmarkStore.swift
+          - DaemonLauncher.swift
+          - MountController.swift
+          - BonjourBrowser.swift
+          - DiagnosticsLog.swift
+          - FinderAccess.swift
+          - SystemMounts.swift
+          - AFPSLTCPProxy.swift
+          - L10n.swift
+    dependencies:
+      - target: AFPBridge
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.marcowilka.classic548.AFPFS
+        PRODUCT_NAME: AFPFS
+        INFOPLIST_FILE: FSKitExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FSKitExtension/AFPFS.entitlements
+        LD_RUNPATH_SEARCH_PATHS:
+          # Prefer the appex-local AFPBridge (with nested Netatalk libs) before the app copy.
+          - "@executable_path/../Frameworks"
+          - "@executable_path/../../../../Frameworks"
+        ENABLE_APP_SANDBOX: YES
+        SKIP_INSTALL: YES
+        ENABLE_DEBUG_DYLIB: NO
+    postBuildScripts:
+      - name: Resign nested Netatalk in AFPFS AFPBridge
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          FW="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.appex/Contents/Frameworks/AFPBridge.framework"
+          if [[ -d "$FW" ]]; then
+            "${SRCROOT}/Scripts/sign-nested-netatalk.sh" "$FW" "${EXPANDED_CODE_SIGN_IDENTITY:-}"
+          fi
+schemes:
+  ClassicAFP:
+    build:
+      targets:
+        ClassicAFP: [run, test, profile, analyze, archive]
+        AFPFS: [run, test, profile, analyze, archive]
+        AFPBridge: [run, test, profile, analyze, archive]
+    run:
+      config: Debug
+      executable: ClassicAFP
+    profile:
+      config: Release
+      executable: ClassicAFP
+    archive:
+      config: Release

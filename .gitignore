@@ -1,0 +1,20 @@
+# Xcode / build
+DerivedData/
+build/
+dist/
+*.xcuserstate
+*.xcuserdata/
+.DS_Store
+
+# Netatalk local build trees
+Vendor/netatalk-client/build/
+Vendor/netatalk-destdir/
+Vendor/netatalk-prefix/
+
+# Local signing / secrets (never commit)
+*.mobileprovision
+*.p8
+notary-issuer.txt
+good_credentials.txt
+Scripts/local-signing.env
+Config/Local.xcconfig

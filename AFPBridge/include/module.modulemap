@@ -1,0 +1,4 @@
+module AFPShim {
+    header "AFPShim.h"
+    export *
+}

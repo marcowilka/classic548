@@ -1,0 +1,2 @@
+// Copy to Config/Local.xcconfig (gitignored) for local Xcode signing.
+// DEVELOPMENT_TEAM = YOUR_TEAM_ID

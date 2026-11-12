@@ -1,0 +1,2 @@
+// Optional local overrides (gitignored). Copy from Local.xcconfig.example if needed.
+#include? "Local.xcconfig"

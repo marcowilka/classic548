@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>ClassicAFP</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>AFPFS</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>EXAppExtensionAttributes</key>
+	<dict>
+		<key>EXExtensionPointIdentifier</key>
+		<string>com.apple.fskit.fsmodule</string>
+		<key>FSShortName</key>
+		<string>classic548</string>
+		<key>FSSupportsBlockResources</key>
+		<false/>
+		<key>FSSupportsPathURLs</key>
+		<false/>
+		<key>FSSupportsGenericURLResources</key>
+		<true/>
+		<key>FSRequiresSecurityScopedPathURLResources</key>
+		<false/>
+		<key>FSSupportedSchemes</key>
+		<array>
+			<string>afp</string>
+		</array>
+		<key>FSSupportsServerURLs</key>
+		<false/>
+		<key>FSPersonalities</key>
+		<dict/>
+		<key>FSMediaTypes</key>
+		<dict/>
+	</dict>
+</dict>
+</plist>

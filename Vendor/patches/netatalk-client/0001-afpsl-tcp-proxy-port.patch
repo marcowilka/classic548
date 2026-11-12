@@ -1,0 +1,162 @@
+diff --git a/daemon/daemon.c b/daemon/daemon.c
+index d6a6999..fcaa57f 100644
+--- a/daemon/daemon.c
++++ b/daemon/daemon.c
+@@ -266,8 +266,8 @@ int main(int argc, char *argv[])
+ 
+     daemon_set_log_method(new_log_method);
+     daemon_set_log_level(log_level);
+-    snprintf(commandfilename, sizeof(commandfilename), "%s-%d",
+-             AFPSL_IPC_SOCKET_PATH, geteuid());
++    /* Must match libafpsl daemon_connect (/tmp or AFPSL_SOCKET_PATH). */
++    afpsl_ipc_socket_path(commandfilename, sizeof(commandfilename));
+ 
+     if ((!dofork) || (fork() == 0)) {
+         if (dofork) {
+diff --git a/daemon/stateless.c b/daemon/stateless.c
+index 08f9ffc..491db70 100644
+--- a/daemon/stateless.c
++++ b/daemon/stateless.c
+@@ -16,6 +16,8 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <arpa/inet.h>
++#include <netinet/in.h>
+ #include <sys/param.h>
+ #include <sys/shm.h>
+ #include <sys/socket.h>
+@@ -386,6 +388,7 @@ int daemon_connect(unsigned int daemon_uid)
+     struct sockaddr_un servaddr;
+     int retries = 50;
+     int ret;
++    const char *tcp_port_env;
+ 
+     /* Check if we already have a valid connection */
+     if (connection.fd >= 0) {
+@@ -394,6 +397,52 @@ int daemon_connect(unsigned int daemon_uid)
+         return 0;
+     }
+ 
++    (void)daemon_uid;
++
++    /*
++     * ClassicAFP FSKit appex: Unix connect to /tmp is EPERM under sandbox.
++     * Host runs a TCP→Unix proxy; set AFPSL_TCP_PORT to use loopback instead.
++     * Do not auto-spawn afpsld when using TCP — the host owns the daemon.
++     */
++    tcp_port_env = getenv("AFPSL_TCP_PORT");
++    if (tcp_port_env != NULL && tcp_port_env[0] != '\0') {
++        char *end = NULL;
++        long port = strtol(tcp_port_env, &end, 10);
++        struct sockaddr_in tcpaddr;
++
++        if (end == tcp_port_env || port <= 0 || port > 65535) {
++            stateless_log_message(LOG_ERR, "Invalid AFPSL_TCP_PORT");
++            errno = EINVAL;
++            return -1;
++        }
++
++        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
++            stateless_log_errno(LOG_ERR, "Could not create TCP socket", errno);
++            return -1;
++        }
++
++#ifdef SO_NOSIGPIPE
++        {
++            int on = 1;
++            setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
++        }
++#endif
++        memset(&tcpaddr, 0, sizeof(tcpaddr));
++        tcpaddr.sin_family = AF_INET;
++        tcpaddr.sin_port = htons((uint16_t)port);
++        tcpaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++        ret = connect(sock, (struct sockaddr *)&tcpaddr, sizeof(tcpaddr));
++        if (ret < 0) {
++            int saved = errno;
++            stateless_log_errno(LOG_ERR, "TCP connect to afpsld proxy failed", saved);
++            close(sock);
++            errno = saved;
++            return -1;
++        }
++        stateless_log_message(LOG_DEBUG, "Connected to afpsld via TCP proxy");
++        goto done;
++    }
++
+     if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+         stateless_log_errno(LOG_ERR, "Could not create socket", errno);
+         return -1;
+@@ -407,8 +456,7 @@ int daemon_connect(unsigned int daemon_uid)
+ #endif
+     memset(&servaddr, 0, sizeof(servaddr));
+     servaddr.sun_family = AF_UNIX;
+-    snprintf(servaddr.sun_path, sizeof(servaddr.sun_path), "%s-%d",
+-             AFPSL_IPC_SOCKET_PATH, daemon_uid);
++    afpsl_ipc_socket_path(servaddr.sun_path, sizeof(servaddr.sun_path));
+     /* Try to connect first */
+     ret = connect(sock, (struct sockaddr *) &servaddr, sizeof(servaddr));
+ 
+@@ -2828,7 +2876,17 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
+ static int ensure_daemon_connection(void)
+ {
+     int ret = daemon_connect(geteuid());
+-    return ret == 0 ? 0 : ret;
++
++    if (ret == 0) {
++        return 0;
++    }
++    /* daemon_connect() historically returns bare -1 with errno set. */
++    if (ret == -1) {
++        int saved = errno;
++
++        return saved > 0 ? -saved : -ECONNREFUSED;
++    }
++    return ret;
+ }
+ 
+ int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
+diff --git a/daemon/stateless_ipc.h b/daemon/stateless_ipc.h
+index 339ce53..9e0b2e6 100644
+--- a/daemon/stateless_ipc.h
++++ b/daemon/stateless_ipc.h
+@@ -2,7 +2,12 @@
+ #define NETATALK_CLIENT_DAEMON_STATELESS_IPC_H
+ 
+ #include <limits.h>
++#include <pwd.h>
+ #include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ 
+ #include "netatalk-client/afpsl.h"
+ #include "lib/afp_protocol.h"
+@@ -14,8 +19,24 @@
+ #define AFPSL_IPC_PROTOCOL_MAJOR 3U
+ #define AFPSL_IPC_PROTOCOL_MINOR 0U
+ 
+-/* Unix socket shared by afpsld and libafpsl. */
+-#define AFPSL_IPC_SOCKET_PATH "/tmp/afp_sl"
++/* Unix socket shared by afpsld and libafpsl.
++ * Prefer AFPSL_SOCKET_PATH, else /tmp fallback. ClassicAFP's sandboxed appex
++ * sets AFPSL_TCP_PORT instead and reaches afpsld via the host TCP→Unix proxy. */
++#define AFPSL_IPC_SOCKET_PATH_FALLBACK "/tmp/classic548-afpsl"
++#define AFPSL_IPC_SOCKET_NAME "classic548-afpsl"
++/* Back-compat for any leftover references. */
++#define AFPSL_IPC_SOCKET_PATH AFPSL_IPC_SOCKET_PATH_FALLBACK
++
++static inline void afpsl_ipc_socket_path(char *buf, size_t buflen)
++{
++    const char *env = getenv("AFPSL_SOCKET_PATH");
++
++    if (env != NULL && env[0] != '\0') {
++        snprintf(buf, buflen, "%s", env);
++        return;
++    }
++    snprintf(buf, buflen, "%s", AFPSL_IPC_SOCKET_PATH_FALLBACK);
++}
+ 
+ /* Structured logging trailer appended to stateless daemon responses. */
+ #define AFPSL_IPC_LOG_MAGIC UINT32_C(0x4146504c)
