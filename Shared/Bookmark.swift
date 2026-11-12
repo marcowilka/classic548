@@ -7,6 +7,7 @@ public struct Bookmark: Codable, Identifiable, Equatable, Sendable {
     public var port: Int
     public var volume: String
     public var username: String
+    public var guestAccess: Bool
     public var autoConnect: Bool
     public var lastError: String?
 
@@ -17,6 +18,7 @@ public struct Bookmark: Codable, Identifiable, Equatable, Sendable {
         port: Int = 548,
         volume: String,
         username: String = "",
+        guestAccess: Bool = false,
         autoConnect: Bool = false,
         lastError: String? = nil
     ) {
@@ -25,14 +27,35 @@ public struct Bookmark: Codable, Identifiable, Equatable, Sendable {
         self.host = host
         self.port = port
         self.volume = volume
-        self.username = username
+        self.username = guestAccess ? "" : username
+        self.guestAccess = guestAccess
         self.autoConnect = autoConnect
         self.lastError = lastError
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, host, port, volume, username, guestAccess, autoConnect, lastError
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decode(Int.self, forKey: .port)
+        volume = try c.decode(String.self, forKey: .volume)
+        username = try c.decode(String.self, forKey: .username)
+        guestAccess = try c.decodeIfPresent(Bool.self, forKey: .guestAccess) ?? false
+        autoConnect = try c.decode(Bool.self, forKey: .autoConnect)
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        if guestAccess {
+            username = ""
+        }
+    }
+
     public var afpURLString: String {
         var s = "afp://"
-        if !username.isEmpty {
+        if !guestAccess, !username.isEmpty {
             s += "\(username.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) ?? username)@"
         }
         s += host

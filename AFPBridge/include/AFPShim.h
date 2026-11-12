@@ -31,6 +31,7 @@ typedef struct AFPShimDirEntry {
 } AFPShimDirEntry;
 
 unsigned int afp_shim_default_uams(void);
+unsigned int afp_shim_guest_uams(void);
 int afp_shim_exit(void);
 
 int afp_shim_connect(const AFPShimURL *url, unsigned int uam_mask, AFPServerHandle *out_server);

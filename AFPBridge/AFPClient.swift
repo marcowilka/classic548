@@ -36,17 +36,26 @@ public final class AFPClient: @unchecked Sendable {
         return volume != nil
     }
 
-    public func connect(to components: AFPURLComponents) throws {
+    public func connect(to components: AFPURLComponents, guest: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
-        try Self.validatePasswordLength(components.password)
+        var login = components
+        let uams: UInt32
+        if guest {
+            login.username = ""
+            login.password = ""
+            uams = afp_shim_guest_uams()
+        } else {
+            try Self.validatePasswordLength(login.password)
+            uams = afp_shim_default_uams()
+        }
         var handle: AFPServerHandle?
-        let url = makeShimURL(components)
-        let rc = withUnsafePointer(to: url) { afp_shim_connect($0, afp_shim_default_uams(), &handle) }
+        let url = makeShimURL(login)
+        let rc = withUnsafePointer(to: url) { afp_shim_connect($0, uams, &handle) }
         if rc != 0 {
             throw AFPError.loginFromErrno(rc)
         }
         server = handle
-        connectedURL = components
+        connectedURL = login
     }
 
     public func resume(to components: AFPURLComponents) throws {

@@ -136,16 +136,20 @@ final class StatusItemController {
             if MountController.shared.isMounted(bookmark) {
                 await MountController.shared.unmount(bookmark)
             } else {
-                let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
-                let password = KeychainStore.password(
-                    account: bookmark.username,
-                    servers: servers,
-                    port: bookmark.port
-                )
-                if password == nil, !bookmark.username.isEmpty {
-                    promptPassword(for: bookmark)
+                if bookmark.guestAccess {
+                    await MountController.shared.mount(bookmark, password: nil)
                 } else {
-                    await MountController.shared.mount(bookmark, password: password)
+                    let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
+                    let password = KeychainStore.password(
+                        account: bookmark.username,
+                        servers: servers,
+                        port: bookmark.port
+                    )
+                    if password == nil, !bookmark.username.isEmpty {
+                        promptPassword(for: bookmark)
+                    } else {
+                        await MountController.shared.mount(bookmark, password: password)
+                    }
                 }
             }
             rebuildMenu()

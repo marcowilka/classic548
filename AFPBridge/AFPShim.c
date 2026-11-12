@@ -50,6 +50,11 @@ unsigned int afp_shim_default_uams(void)
     return mask ? mask : afp_sl_default_uams();
 }
 
+unsigned int afp_shim_guest_uams(void)
+{
+    return (unsigned int)AFP_SL_UAM_NO_USER_AUTH;
+}
+
 int afp_shim_exit(void)
 {
     return shim_normalize_rc(afp_sl_exit());

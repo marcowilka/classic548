@@ -23,6 +23,7 @@ public enum L10n {
     public static func volumeLoadFailed(_ detail: String) -> String { t("favorites.volumeLoadFailed", detail) }
     public static var username: String { t("favorites.username") }
     public static var password: String { t("favorites.password") }
+    public static var guestAccess: String { t("favorites.guestAccess") }
     public static var connectAtLogin: String { t("favorites.connectAtLogin") }
     public static var launchAtLogin: String { t("favorites.launchAtLogin") }
     public static var addUpdate: String { t("favorites.addUpdate") }

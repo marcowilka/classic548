@@ -25,6 +25,10 @@ public final class MountController {
             }
             var mountBookmark = bookmark
             mountBookmark.host = connectHost
+            if bookmark.guestAccess {
+                mountBookmark.guestAccess = true
+                mountBookmark.username = ""
+            }
 
             // Adopt / clear BEFORE touching the daemon — restarting afpsld under a
             // live /Volumes mount is what produced EINVAL + EBUSY loops.
@@ -53,35 +57,39 @@ public final class MountController {
             }
             DiagnosticsLog.shared.info("afpsld is running")
 
-            guard let password, !password.isEmpty else {
-                throw MountError.missingPassword
-            }
+            if bookmark.guestAccess {
+                DiagnosticsLog.shared.info("Guest mount (No User Authent) for \(bookmark.displayName)")
+            } else {
+                guard let password, !password.isEmpty else {
+                    throw MountError.missingPassword
+                }
 
-            // Appex reads this under the shared keychain-access-group. Must succeed.
-            let keychainServers = [bookmark.host, connectHost]
-            try KeychainStore.savePassword(
-                password,
-                account: bookmark.username,
-                servers: keychainServers,
-                port: bookmark.port
-            )
-            let verifyStatus = KeychainStore.passwordStatus(
-                account: bookmark.username,
-                server: connectHost,
-                port: bookmark.port
-            )
-            let readable = KeychainStore.password(
-                account: bookmark.username,
-                servers: keychainServers,
-                port: bookmark.port
-            )
-            DiagnosticsLog.shared.info(
-                "Keychain saved for \(bookmark.username)@\(keychainServers.joined(separator: "|")) group=\(KeychainStore.accessGroup) \(KeychainStore.describeStatus(verifyStatus)) readable=\(readable != nil)"
-            )
-            guard readable != nil else {
-                throw KeychainStore.KeychainError.unhandled(
-                    verifyStatus == errSecSuccess ? errSecItemNotFound : verifyStatus
+                // Appex reads this under the shared keychain-access-group. Must succeed.
+                let keychainServers = [bookmark.host, connectHost]
+                try KeychainStore.savePassword(
+                    password,
+                    account: bookmark.username,
+                    servers: keychainServers,
+                    port: bookmark.port
                 )
+                let verifyStatus = KeychainStore.passwordStatus(
+                    account: bookmark.username,
+                    server: connectHost,
+                    port: bookmark.port
+                )
+                let readable = KeychainStore.password(
+                    account: bookmark.username,
+                    servers: keychainServers,
+                    port: bookmark.port
+                )
+                DiagnosticsLog.shared.info(
+                    "Keychain saved for \(bookmark.username)@\(keychainServers.joined(separator: "|")) group=\(KeychainStore.accessGroup) \(KeychainStore.describeStatus(verifyStatus)) readable=\(readable != nil)"
+                )
+                guard readable != nil else {
+                    throw KeychainStore.KeychainError.unhandled(
+                        verifyStatus == errSecSuccess ? errSecItemNotFound : verifyStatus
+                    )
+                }
             }
 
             try await preflightNetwork(host: connectHost, port: bookmark.port)

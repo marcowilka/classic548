@@ -100,12 +100,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if MountController.shared.isMounted(bookmark) {
                     continue
                 }
-                let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
-                let password = KeychainStore.password(
-                    account: bookmark.username,
-                    servers: servers,
-                    port: bookmark.port
-                )
+                let password: String?
+                if bookmark.guestAccess {
+                    password = nil
+                } else {
+                    let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
+                    password = KeychainStore.password(
+                        account: bookmark.username,
+                        servers: servers,
+                        port: bookmark.port
+                    )
+                }
                 await MountController.shared.mountForAutoConnect(bookmark, password: password)
             }
         }

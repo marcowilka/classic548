@@ -7,27 +7,37 @@ public enum AFPVolumeBrowser {
     public static func listVolumes(
         host: String,
         port: Int = 548,
-        username: String,
-        password: String
+        username: String = "",
+        password: String = "",
+        guest: Bool = false
     ) throws -> [String] {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHost.isEmpty else {
             throw AFPError.invalidURL
         }
-        guard !trimmedUser.isEmpty else {
-            throw AFPError.unexpected("Username required")
-        }
-        guard !password.isEmpty else {
-            throw AFPError.credentialsUnavailable(status: errSecItemNotFound)
+
+        let trimmedUser: String
+        let resolvedPassword: String
+        if guest {
+            trimmedUser = ""
+            resolvedPassword = ""
+        } else {
+            trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedUser.isEmpty else {
+                throw AFPError.unexpected("Username required")
+            }
+            guard !password.isEmpty else {
+                throw AFPError.credentialsUnavailable(status: errSecItemNotFound)
+            }
+            resolvedPassword = password
         }
 
         try DaemonLauncher.shared.ensureRunning()
 
         let connectHost = HostResolver.preferredAFPHost(trimmedHost)
-        var components = AFPURLComponents(
+        let components = AFPURLComponents(
             username: trimmedUser,
-            password: password,
+            password: resolvedPassword,
             host: connectHost,
             port: port,
             volume: "",
@@ -38,7 +48,7 @@ public enum AFPVolumeBrowser {
         defer {
             try? client.disconnect()
         }
-        try client.connect(to: components)
+        try client.connect(to: components, guest: guest)
         let names = try client.listVolumes()
         return names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

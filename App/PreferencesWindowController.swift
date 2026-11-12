@@ -11,6 +11,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
     private let refreshVolumesButton = NSButton()
     private let userField = NSTextField()
     private let passwordField = NSSecureTextField()
+    private let guestAccessButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let autoConnectButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var selectedID: UUID?
@@ -22,7 +23,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -127,12 +128,23 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         volumeRow.addArrangedSubview(refreshVolumesButton)
         form.addArrangedSubview(volumeRow)
 
+        guestAccessButton.title = L10n.guestAccess
+        guestAccessButton.target = self
+        guestAccessButton.action = #selector(guestAccessToggled)
         autoConnectButton.title = L10n.connectAtLogin
+        form.addArrangedSubview(guestAccessButton)
+        form.addArrangedSubview(autoConnectButton)
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.widthAnchor.constraint(equalToConstant: 398).isActive = true
+        form.addArrangedSubview(separator)
+
         launchAtLoginButton.title = L10n.launchAtLogin
         launchAtLoginButton.state = (UserDefaults.standard.object(forKey: AppConstants.launchAtLoginKey) as? Bool ?? true) ? .on : .off
         launchAtLoginButton.target = self
         launchAtLoginButton.action = #selector(toggleLaunchAtLogin)
-        form.addArrangedSubview(autoConnectButton)
         form.addArrangedSubview(launchAtLoginButton)
 
         let addButton = NSButton(title: L10n.addUpdate, target: self, action: #selector(saveBookmark))
@@ -159,7 +171,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             root.topAnchor.constraint(equalTo: container.topAnchor),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             root.widthAnchor.constraint(equalToConstant: 760),
-            root.heightAnchor.constraint(equalToConstant: 420),
+            root.heightAnchor.constraint(equalToConstant: 460),
 
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
@@ -245,12 +257,17 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         let bookmark = bookmarks[row]
         selectedID = bookmark.id
         applyForm(bookmark)
-        let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
-        passwordField.stringValue = KeychainStore.password(
-            account: bookmark.username,
-            servers: servers,
-            port: bookmark.port
-        ) ?? ""
+        if bookmark.guestAccess {
+            passwordField.stringValue = ""
+        } else {
+            let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
+            passwordField.stringValue = KeychainStore.password(
+                account: bookmark.username,
+                servers: servers,
+                port: bookmark.port
+            ) ?? ""
+        }
+        updateCredentialFieldsEnabled()
         updateVolumeFetchControls()
         rebuildVolumePopup(preserving: bookmark.volume)
     }
@@ -259,10 +276,39 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         nameField.stringValue = bookmark.displayName
         hostField.stringValue = bookmark.host
         portField.stringValue = String(bookmark.port)
-        userField.stringValue = bookmark.username
+        userField.stringValue = bookmark.guestAccess ? "" : bookmark.username
+        guestAccessButton.state = bookmark.guestAccess ? .on : .off
         autoConnectButton.state = bookmark.autoConnect ? .on : .off
+        if bookmark.guestAccess {
+            passwordField.stringValue = ""
+        }
+        updateCredentialFieldsEnabled()
         discardStaleVolumesIfNeeded(preserving: bookmark.volume)
         updateVolumeFetchControls()
+    }
+
+    private var isGuestAccess: Bool {
+        guestAccessButton.state == .on
+    }
+
+    private func updateCredentialFieldsEnabled() {
+        let enabled = !isGuestAccess
+        userField.isEnabled = enabled
+        passwordField.isEnabled = enabled
+    }
+
+    @objc private func guestAccessToggled() {
+        updateCredentialFieldsEnabled()
+        if isGuestAccess {
+            userField.stringValue = ""
+            passwordField.stringValue = ""
+        }
+        updateVolumeFetchControls()
+        rebuildVolumePopup(preserving: selectedVolumeName.isEmpty ? nil : selectedVolumeName)
+        // Guest only needs a host — refresh immediately when enabled.
+        if isGuestAccess, canLoadVolumes {
+            scheduleVolumeFetch(immediate: true)
+        }
     }
 
     private var selectedVolumeName: String {
@@ -277,14 +323,22 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
 
     private var canLoadVolumes: Bool {
         let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return false }
+        if isGuestAccess { return true }
         let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !host.isEmpty && !user.isEmpty && resolvedPassword() != nil
+        return !user.isEmpty && resolvedPassword() != nil
     }
 
     private func updateVolumeFetchControls() {
         let ready = canLoadVolumes
         refreshVolumesButton.isEnabled = ready && !isFetchingVolumes
-        refreshVolumesButton.toolTip = ready ? L10n.refreshVolumes : L10n.refreshNeedsCredentials
+        if ready {
+            refreshVolumesButton.toolTip = L10n.refreshVolumes
+        } else if isGuestAccess {
+            refreshVolumesButton.toolTip = L10n.refreshNeedsCredentials
+        } else {
+            refreshVolumesButton.toolTip = L10n.refreshNeedsCredentials
+        }
     }
 
     private func volumeIdentity(host: String, port: Int) -> String {
@@ -400,13 +454,25 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let port = Int(portField.stringValue) ?? 548
+        let guest = isGuestAccess
         let identity = volumeIdentity(host: host, port: port)
         let preserving = selectedVolumeName.isEmpty ? nil : selectedVolumeName
 
-        guard let password = resolvedPassword(), !host.isEmpty, !user.isEmpty else {
-            discardStaleVolumesIfNeeded(preserving: preserving)
-            updateVolumeFetchControls()
-            return
+        let password: String
+        if guest {
+            guard !host.isEmpty else {
+                discardStaleVolumesIfNeeded(preserving: preserving)
+                updateVolumeFetchControls()
+                return
+            }
+            password = ""
+        } else {
+            guard let resolved = resolvedPassword(), !host.isEmpty, !user.isEmpty else {
+                discardStaleVolumesIfNeeded(preserving: preserving)
+                updateVolumeFetchControls()
+                return
+            }
+            password = resolved
         }
 
         isFetchingVolumes = true
@@ -419,8 +485,9 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
                 let names = try AFPVolumeBrowser.listVolumes(
                     host: host,
                     port: port,
-                    username: user,
-                    password: password
+                    username: guest ? "" : user,
+                    password: password,
+                    guest: guest
                 )
                 result = .success(names)
             } catch {
@@ -478,17 +545,19 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             id = UUID()
         }
 
+        let guest = isGuestAccess
         let bookmark = Bookmark(
             id: id,
             displayName: nameField.stringValue,
             host: host,
             port: port,
             volume: volume,
-            username: userField.stringValue,
+            username: guest ? "" : userField.stringValue,
+            guestAccess: guest,
             autoConnect: autoConnectButton.state == .on
         )
         BookmarkStore.shared.upsert(bookmark)
-        if !passwordField.stringValue.isEmpty, !bookmark.username.isEmpty {
+        if !guest, !passwordField.stringValue.isEmpty, !bookmark.username.isEmpty {
             let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
             try? KeychainStore.savePassword(
                 passwordField.stringValue,
@@ -507,9 +576,12 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
 
     @objc private func removeBookmark() {
         guard let selectedID else { return }
-        if let bookmark = bookmarks.first(where: { $0.id == selectedID }) {
+        if let bookmark = bookmarks.first(where: { $0.id == selectedID }),
+           !bookmark.guestAccess,
+           !bookmark.username.isEmpty {
             let othersStillNeedPassword = BookmarkStore.shared.load().contains {
                 $0.id != selectedID
+                    && !$0.guestAccess
                     && $0.port == bookmark.port
                     && !$0.username.isEmpty
                     && $0.username == bookmark.username
@@ -533,10 +605,15 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         guard let selectedID,
               let bookmark = BookmarkStore.shared.load().first(where: { $0.id == selectedID })
         else { return }
-        let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
-        let password = passwordField.stringValue.isEmpty
-            ? KeychainStore.password(account: bookmark.username, servers: servers, port: bookmark.port)
-            : passwordField.stringValue
+        let password: String?
+        if bookmark.guestAccess {
+            password = nil
+        } else {
+            let servers = [bookmark.host, HostResolver.preferredAFPHost(bookmark.host)]
+            password = passwordField.stringValue.isEmpty
+                ? KeychainStore.password(account: bookmark.username, servers: servers, port: bookmark.port)
+                : passwordField.stringValue
+        }
         Task { @MainActor in
             await MountController.shared.mount(bookmark, password: password)
         }

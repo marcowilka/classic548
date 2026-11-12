@@ -577,51 +577,76 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
             }
 
             if !loggedIn {
-                let status = KeychainStore.passwordStatus(
-                    account: session.username,
-                    server: session.host,
-                    port: session.port
-                )
-                let statusText = KeychainStore.describeStatus(status)
-                extensionTrace(
-                    "keychain lookup \(session.username)@\(session.host):\(session.port) \(statusText) group=\(KeychainStore.accessGroup)"
-                )
-                guard let stored = KeychainStore.password(
-                    account: session.username,
-                    server: session.host,
-                    port: session.port
-                ), !stored.isEmpty else {
-                    log.error(
-                        "No keychain password for \(session.username, privacy: .public)@\(session.host, privacy: .public) (\(statusText, privacy: .public))"
-                    )
-                    extensionTrace("keychain miss — aborting (\(statusText))")
-                    throw AFPError.credentialsUnavailable(status: status)
-                }
-                if stored.utf8.count > AFPClient.maxPasswordUTF8Bytes {
-                    extensionTrace("keychain password too long passLen=\(stored.utf8.count)")
-                    throw AFPError.passwordTooLong
-                }
-                session.password = stored
-                do {
-                    try client.connect(to: session)
-                    extensionTrace("keychain connect OK passLen=\(stored.utf8.count)")
-                    loggedIn = true
-                } catch let error as AFPError where error.isRetryable {
-                    extensionTrace(
-                        "keychain connect transient fail passLen=\(stored.utf8.count): \(error); retrying once"
-                    )
-                    Thread.sleep(forTimeInterval: 0.5)
+                let isGuest = session.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if isGuest {
+                    extensionTrace("guest connect (No User Authent) host=\(session.host)")
+                    session.password = ""
                     do {
-                        try client.connect(to: session)
-                        extensionTrace("keychain connect retry OK")
+                        try client.connect(to: session, guest: true)
+                        extensionTrace("guest connect OK")
                         loggedIn = true
+                    } catch let error as AFPError where error.isRetryable {
+                        extensionTrace("guest connect transient fail: \(error); retrying once")
+                        Thread.sleep(forTimeInterval: 0.5)
+                        do {
+                            try client.connect(to: session, guest: true)
+                            extensionTrace("guest connect retry OK")
+                            loggedIn = true
+                        } catch {
+                            extensionTrace("guest connect retry failed: \(error)")
+                            throw error
+                        }
                     } catch {
-                        extensionTrace("keychain connect retry failed: \(error)")
+                        extensionTrace("guest connect failed (no retry): \(error)")
                         throw error
                     }
-                } catch {
-                    extensionTrace("keychain connect failed (no retry): \(error)")
-                    throw error
+                } else {
+                    let status = KeychainStore.passwordStatus(
+                        account: session.username,
+                        server: session.host,
+                        port: session.port
+                    )
+                    let statusText = KeychainStore.describeStatus(status)
+                    extensionTrace(
+                        "keychain lookup \(session.username)@\(session.host):\(session.port) \(statusText) group=\(KeychainStore.accessGroup)"
+                    )
+                    guard let stored = KeychainStore.password(
+                        account: session.username,
+                        server: session.host,
+                        port: session.port
+                    ), !stored.isEmpty else {
+                        log.error(
+                            "No keychain password for \(session.username, privacy: .public)@\(session.host, privacy: .public) (\(statusText, privacy: .public))"
+                        )
+                        extensionTrace("keychain miss — aborting (\(statusText))")
+                        throw AFPError.credentialsUnavailable(status: status)
+                    }
+                    if stored.utf8.count > AFPClient.maxPasswordUTF8Bytes {
+                        extensionTrace("keychain password too long passLen=\(stored.utf8.count)")
+                        throw AFPError.passwordTooLong
+                    }
+                    session.password = stored
+                    do {
+                        try client.connect(to: session)
+                        extensionTrace("keychain connect OK passLen=\(stored.utf8.count)")
+                        loggedIn = true
+                    } catch let error as AFPError where error.isRetryable {
+                        extensionTrace(
+                            "keychain connect transient fail passLen=\(stored.utf8.count): \(error); retrying once"
+                        )
+                        Thread.sleep(forTimeInterval: 0.5)
+                        do {
+                            try client.connect(to: session)
+                            extensionTrace("keychain connect retry OK")
+                            loggedIn = true
+                        } catch {
+                            extensionTrace("keychain connect retry failed: \(error)")
+                            throw error
+                        }
+                    } catch {
+                        extensionTrace("keychain connect failed (no retry): \(error)")
+                        throw error
+                    }
                 }
             }
 
