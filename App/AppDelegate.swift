@@ -28,12 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Adopt volumes that survived a previous quit (daemon left running).
         MountController.shared.reconcileMountedVolumes()
 
+        registerLoginItemIfNeeded()
+
+        // FSKit/RBS often rejects the first mount right after Quit+relaunch even when
+        // the module is listed enabled. Refresh, settle briefly, then auto-connect;
+        // mount() also retries auth failures with backoff.
         Task { @MainActor in
             _ = await MountController.shared.refreshExtensionStatus()
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            autoConnectFavorites()
         }
-
-        registerLoginItemIfNeeded()
-        autoConnectFavorites()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,

@@ -256,7 +256,10 @@ SetFile -a V "${DMG_MOUNT}/.background" 2>/dev/null \
   || true
 
 BG_POSIX="${DMG_MOUNT}/.background/background.png"
-osascript <<APPLESCRIPT
+# Finder sometimes races the fresh mount ("disk cannot be read", -1728). Retry briefly.
+LAYOUT_OK=0
+for _ in 1 2 3 4 5; do
+  if osascript <<APPLESCRIPT
 tell application "Finder"
   tell disk "${VOL_NAME}"
     open
@@ -274,11 +277,20 @@ tell application "Finder"
     set position of item "ClassicAFP.app" of container window to {160, 145}
     set position of item "Applications" of container window to {500, 145}
     update without registering applications
-    delay 2
+    delay 1
     close
   end tell
 end tell
 APPLESCRIPT
+  then
+    LAYOUT_OK=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${LAYOUT_OK}" -ne 1 ]]; then
+  echo "warning: Finder DMG layout failed; continuing with default icon positions" >&2
+fi
 
 sleep 1
 sync

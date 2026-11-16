@@ -60,13 +60,15 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
 
     private func forceCloseOpenFork(_ item: AFPItem, reason: String) {
         guard let state = item.openState else { return }
+        item.openState = nil
         do {
             try client.close(.init(fileID: state.fileID))
+            extensionTrace("\(reason) force-closed fork path=\(item.path) fileID=\(state.fileID)")
         } catch {
-            extensionTrace("\(reason) close fork failed path=\(item.path) fileID=\(state.fileID): \(error)")
+            extensionTrace(
+                "\(reason) close fork failed path=\(item.path) fileID=\(state.fileID): \(error)"
+            )
         }
-        item.openState = nil
-        extensionTrace("\(reason) force-closed fork path=\(item.path) fileID=\(state.fileID)")
     }
 
     private func removePath(_ item: AFPItem) throws {
@@ -441,7 +443,18 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 // Force-close this item's AFP fork before unlink/rmdir.
                 self.forceCloseOpenFork(item, reason: "removeItem")
                 let itemAttrs = self.attributes(for: item, request: FSRemoveItemResult.requestedAttributes)
-                try self.removePath(item)
+                do {
+                    try self.removePath(item)
+                } catch {
+                    // One retry: close may race the server's FileBusy check.
+                    let bridged = fs_bridge(error)
+                    if bridged.code == EIO || bridged.code == EBUSY {
+                        self.forceCloseOpenFork(item, reason: "removeItem/retry")
+                        try self.removePath(item)
+                    } else {
+                        throw error
+                    }
+                }
                 self.itemsByPath.removeValue(forKey: item.path)
                 extensionTrace("removeItem OK \(item.path)")
                 let dirAttrs = self.attributes(for: directory, request: FSRemoveItemResult.requestedAttributes)
@@ -501,11 +514,14 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                     surviving = item
                     extensionTrace("renameOver OK \(oldPath) → \(newPath) (unlink+rename)")
                 } else {
-                    // Keep the same AFPItem (and openState) so a later removeItem can
-                    // force-close the fork. Dropping openState on aside-rename left
-                    // TextEdit .sb-* temps busy → sticky leftovers (-36 / EIO).
+                    // TextEdit safe-save renames the open document aside, then deletes
+                    // it. Migrating openState still left intermittent FileBusy/EIO on
+                    // that delete (server fork not always clear). Close before rename
+                    // so the aside CNID is never busy; FSKit reopens via ensureOpen
+                    // if it writes again (serialized on this queue).
                     let oldPath = item.path
                     let hadOpen = item.openState != nil
+                    self.forceCloseOpenFork(item, reason: "rename/aside")
                     try self.client.rename(from: oldPath, to: newPath)
                     self.itemsByPath.removeValue(forKey: oldPath)
                     item.path = newPath
@@ -514,7 +530,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                     self.itemsByPath[newPath] = item
                     surviving = item
                     extensionTrace(
-                        "rename OK \(oldPath) → \(newPath) openMigrated=\(hadOpen)"
+                        "rename OK \(oldPath) → \(newPath) closedBeforeRename=\(hadOpen)"
                     )
                 }
 

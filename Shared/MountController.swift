@@ -103,7 +103,7 @@ public final class MountController {
             DiagnosticsLog.shared.info("Calling FSClient.mountSingleVolume for \(extensionBundleID)")
             let mountURL: URL
             do {
-                mountURL = try await mountSingleVolume(resource: resource)
+                mountURL = try await mountSingleVolumeAllowingExtensionAuthRetry(resource: resource)
             } catch {
                 let ns = error as NSError
                 if ns.domain == NSPOSIXErrorDomain && ns.code == Int(EBUSY) {
@@ -122,7 +122,7 @@ public final class MountController {
                             DiagnosticsLog.shared.info("EBUSY — refusing force-unmount of unmatched path \(stale.path)")
                         }
                     }
-                    mountURL = try await mountSingleVolume(resource: resource)
+                    mountURL = try await mountSingleVolumeAllowingExtensionAuthRetry(resource: resource)
                 } else {
                     throw error
                 }
@@ -140,20 +140,12 @@ public final class MountController {
         }
     }
 
-    /// Auto-connect path: one retry after launch races; never leave a sticky error in the menu.
+    /// Auto-connect path: mount() already retries RBS auth races; keep menu calm on failure.
     public func mountForAutoConnect(_ bookmark: Bookmark, password: String?) async {
         if isMounted(bookmark) { return }
         statusMessage = L10n.connecting(bookmark.displayName)
         onChange?()
         await mount(bookmark, password: password)
-        if isMounted(bookmark) { return }
-
-        DiagnosticsLog.shared.info("Auto-connect retry for \(bookmark.displayName)")
-        statusMessage = L10n.connecting(bookmark.displayName)
-        onChange?()
-        try? await Task.sleep(nanoseconds: 800_000_000)
-        await mount(bookmark, password: password)
-
         if !isMounted(bookmark) {
             // Details stay in Diagnostics / latest.log — menu stays calm.
             statusMessage = L10n.ready
@@ -294,6 +286,72 @@ public final class MountController {
         }
     }
 
+    /// After Quit, FSKit/RBS often rejects the first mount(s) with "Client not authorized"
+    /// even though the module lists as enabled. A second app launch then works — absorb
+    /// that race here with backoff instead of forcing the user to relaunch.
+    private func mountSingleVolumeAllowingExtensionAuthRetry(
+        resource: FSGenericURLResource
+    ) async throws -> URL {
+        // delays before attempt index: immediate, then 1s / 2s / 4s / 8s / 12s
+        let delaysNs: [UInt64] = [
+            0,
+            1_000_000_000,
+            2_000_000_000,
+            4_000_000_000,
+            8_000_000_000,
+            12_000_000_000,
+        ]
+        var lastError: Error?
+        for (attempt, delay) in delaysNs.enumerated() {
+            if delay > 0 {
+                DiagnosticsLog.shared.info(
+                    "FSKit extension auth retry \(attempt)/\(delaysNs.count - 1) after \(delay / 1_000_000)ms"
+                )
+                try? await Task.sleep(nanoseconds: delay)
+                reassertExtensionElection()
+                // Nudge FSKit's extension list so pkd/fskit_agent refresh the appex.
+                _ = try? await FSClient.shared.installedExtensions
+            }
+            do {
+                return try await mountSingleVolume(resource: resource)
+            } catch {
+                if isExtensionAuthorizationError(error) {
+                    lastError = error
+                    DiagnosticsLog.shared.info(
+                        "FSKit extension auth not ready (attempt \(attempt + 1)/\(delaysNs.count))"
+                    )
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastError ?? POSIXError(.EIO)
+    }
+
+    /// Best-effort: re-elect the Apps appex so RBS picks up this process after Quit.
+    private func reassertExtensionElection() {
+        let appex = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Extensions/AFPFS.appex", isDirectory: true)
+        let pk = URL(fileURLWithPath: "/usr/bin/pluginkit")
+        guard FileManager.default.isExecutableFile(atPath: pk.path) else { return }
+        for args in [
+            ["-a", appex.path],
+            ["-e", "use", "-i", extensionBundleID],
+        ] {
+            let proc = Process()
+            proc.executableURL = pk
+            proc.arguments = args
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                DiagnosticsLog.shared.info("pluginkit \(args.joined(separator: " ")) failed: \(error)")
+            }
+        }
+    }
+
     private func presentInFinder(_ url: URL) {
         FinderAccess.revealVolume(at: url)
     }
@@ -418,6 +476,7 @@ public final class MountController {
     }
 
     private func isTransientMountError(_ error: Error) -> Bool {
+        if isExtensionAuthorizationError(error) { return true }
         if let afp = error as? AFPError, afp.isRetryable { return true }
         let ns = error as NSError
         if ns.domain == NSPOSIXErrorDomain {
@@ -426,6 +485,29 @@ public final class MountController {
         }
         if ns.domain == "AFPBridge.AFPError", let errno = ns.userInfo["AFPErrno"] as? Int {
             return [Int(EHOSTUNREACH), Int(ENETUNREACH), Int(ETIMEDOUT), Int(ECONNREFUSED)].contains(errno)
+        }
+        return false
+    }
+
+    private func isExtensionAuthorizationError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        let combined = "\(ns.domain) \(ns.localizedDescription) \(ns.userInfo)"
+        if combined.localizedCaseInsensitiveContains("Client not authorized")
+            || ns.domain == "RBSServiceErrorDomain"
+            || (ns.domain == "com.apple.extensionKit.errorDomain"
+                && combined.localizedCaseInsensitiveContains("RBSServiceErrorDomain"))
+            || combined.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
+        {
+            return true
+        }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            let u = "\(underlying.domain) \(underlying.localizedDescription) \(underlying.userInfo)"
+            if u.localizedCaseInsensitiveContains("Client not authorized")
+                || underlying.domain == "RBSServiceErrorDomain"
+                || u.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
+            {
+                return true
+            }
         }
         return false
     }
@@ -480,24 +562,8 @@ public final class MountController {
         if ns.localizedDescription.localizedCaseInsensitiveContains("not permitted") {
             return "FSKit mount not permitted — enable File System Extensions / grant fskit.mount (see Diagnostics)"
         }
-        let combined = "\(ns.domain) \(ns.localizedDescription) \(ns.userInfo)"
-        if combined.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
-            || combined.localizedCaseInsensitiveContains("Client not authorized")
-            || ns.domain == "RBSServiceErrorDomain"
-            || (ns.domain == "com.apple.extensionKit.errorDomain"
-                && combined.localizedCaseInsensitiveContains("RBSServiceErrorDomain"))
-        {
+        if isExtensionAuthorizationError(error) {
             return "FSKit extension not authorized / path conflict — quit every ClassicAFP (Apps + Xcode), then: pluginkit -r -i \(AppConstants.fsExtensionBundleID); use one build only; re-enable File System Extensions"
-        }
-        // Nested underlying errors (extensionKit wraps RBS).
-        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
-            let u = "\(underlying.domain) \(underlying.localizedDescription) \(underlying.userInfo)"
-            if u.localizedCaseInsensitiveContains("Client not authorized")
-                || underlying.domain == "RBSServiceErrorDomain"
-                || u.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
-            {
-                return "FSKit extension not authorized / path conflict — quit every ClassicAFP (Apps + Xcode), then: pluginkit -r -i \(AppConstants.fsExtensionBundleID); use one build only; re-enable File System Extensions"
-            }
         }
         return "\(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
     }
