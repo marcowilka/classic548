@@ -47,8 +47,53 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
     }
 
     private func shutdownLocked() {
+        clearAllOpenHandlesLocked()
         try? client.detach()
         try? client.disconnect()
+    }
+
+    private func clearAllOpenHandlesLocked() {
+        for item in itemsByPath.values {
+            if let state = item.openState {
+                try? client.close(.init(fileID: state.fileID))
+                item.openState = nil
+            }
+        }
+    }
+
+    private func invalidateSessionLocked() {
+        clearAllOpenHandlesLocked()
+        try? client.detach()
+        try? client.disconnect()
+        extensionTrace("session invalidated — opens cleared")
+    }
+
+    /// Reconnect once for idempotent ops when the AFP session went stale.
+    private func withIdempotentSessionRetry<T>(_ body: () throws -> T) throws -> T {
+        do {
+            try ensureSession()
+            return try body()
+        } catch let error as AFPError where error.isSessionStale {
+            extensionTrace("idempotent retry after stale session: \(error)")
+            invalidateSessionLocked()
+            try ensureSession()
+            return try body()
+        } catch let error as NSError where Self.isPOSIXSessionStale(error) {
+            extensionTrace("idempotent retry after POSIX stale: \(error)")
+            invalidateSessionLocked()
+            try ensureSession()
+            return try body()
+        }
+    }
+
+    private static func isPOSIXSessionStale(_ error: NSError) -> Bool {
+        guard error.domain == NSPOSIXErrorDomain else { return false }
+        switch Int32(error.code) {
+        case ECONNRESET, ETIMEDOUT, ENOTCONN, EPIPE, ENETDOWN, ENETUNREACH, EHOSTUNREACH:
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Capabilities / PathConf
@@ -243,12 +288,13 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         }
         queue.async {
             do {
-                try self.ensureSession()
                 var start = Int(cookie.rawValue)
                 let currentVerifier: FSDirectoryVerifier = verifier == .initial
                     ? FSDirectoryVerifier(rawValue: UInt64(Date().timeIntervalSince1970))
                     : verifier
-                let page = try self.client.readDirectory(directory.path, start: start, count: 128)
+                let page = try self.withIdempotentSessionRetry {
+                    try self.client.readDirectory(directory.path, start: start, count: 128)
+                }
                 if attributes == nil && cookie == .initial {
                     _ = packer.packEntry(
                         name: FSFileName(string: "."),
@@ -459,8 +505,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
             do {
                 try self.ensureSession()
                 let writeable = modes.contains(.write)
-                let file = try self.client.open(path: item.path, writeable: writeable)
-                item.openFileID = file.fileID
+                _ = try self.ensureOpen(item, writeable: writeable)
                 reply(nil)
             } catch {
                 reply(error)
@@ -479,10 +524,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
             return
         }
         queue.async {
-            if let fileID = item.openFileID {
-                try? self.client.close(.init(fileID: fileID))
-                item.openFileID = nil
-            }
+            self.releaseOpen(item)
             reply(nil)
         }
     }
@@ -500,12 +542,18 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         }
         queue.async {
             do {
-                try self.ensureSession()
-                let fileID = try self.ensureOpen(item, writeable: false)
-                let (data, _) = try self.client.read(.init(fileID: fileID), offset: UInt64(offset), length: UInt32(length))
-                let written = buffer.withUnsafeMutableBytes { dest in
-                    data.copyBytes(to: dest.bindMemory(to: UInt8.self), count: min(data.count, length))
-                    return min(data.count, length)
+                let written = try self.withIdempotentSessionRetry { () -> Int in
+                    let fileID = try self.ensureOpen(item, writeable: false)
+                    defer { self.releaseOpen(item) }
+                    let (data, _) = try self.client.read(
+                        .init(fileID: fileID),
+                        offset: UInt64(offset),
+                        length: UInt32(length)
+                    )
+                    return buffer.withUnsafeMutableBytes { dest in
+                        data.copyBytes(to: dest.bindMemory(to: UInt8.self), count: min(data.count, length))
+                        return min(data.count, length)
+                    }
                 }
                 let attrs = self.attributes(for: item, request: FSReadFileResult.requestedAttributes)
                 reply(FSReadFileResult(bytesRead: written, itemAttributes: attrs), nil)
@@ -527,12 +575,17 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         }
         queue.async {
             do {
+                // Non-idempotent — reconnect once only if we were not attached; never replay write.
                 try self.ensureSession()
                 let fileID = try self.ensureOpen(item, writeable: true)
+                defer { self.releaseOpen(item) }
                 let written = try self.client.write(.init(fileID: fileID), offset: UInt64(offset), data: contents)
                 item.size = max(item.size, UInt64(offset) + UInt64(written))
                 let attrs = self.attributes(for: item, request: FSWriteFileResult.requestedAttributes)
                 reply(FSWriteFileResult(bytesWritten: written, itemAttributes: attrs, freeSpace: nil), nil)
+            } catch let error as AFPError where error.isSessionStale {
+                self.invalidateSessionLocked()
+                reply(nil, error)
             } catch {
                 reply(nil, error)
             }
@@ -670,12 +723,36 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
     }
 
     private func ensureOpen(_ item: AFPItem, writeable: Bool) throws -> UInt32 {
-        if let existing = item.openFileID {
-            return existing
+        if var state = item.openState {
+            if !writeable || state.writable {
+                state.refCount += 1
+                item.openState = state
+                return state.fileID
+            }
+            // Upgrade read-only fork to writable.
+            try? client.close(.init(fileID: state.fileID))
+            let file = try client.open(path: item.path, writeable: true)
+            item.openState = AFPItem.OpenState(
+                fileID: file.fileID,
+                writable: true,
+                refCount: state.refCount + 1
+            )
+            return file.fileID
         }
         let file = try client.open(path: item.path, writeable: writeable)
-        item.openFileID = file.fileID
+        item.openState = AFPItem.OpenState(fileID: file.fileID, writable: writeable, refCount: 1)
         return file.fileID
+    }
+
+    private func releaseOpen(_ item: AFPItem) {
+        guard var state = item.openState else { return }
+        state.refCount -= 1
+        if state.refCount <= 0 {
+            try? client.close(.init(fileID: state.fileID))
+            item.openState = nil
+        } else {
+            item.openState = state
+        }
     }
 
     private func item(

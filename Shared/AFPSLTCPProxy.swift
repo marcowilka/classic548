@@ -2,6 +2,8 @@ import Foundation
 
 /// Accepts TCP connections on loopback and relays bytes to the local afpsld Unix socket.
 /// Lets the sandboxed FSKit appex talk to afpsld without Unix-domain `connect()` (EPERM).
+/// Bound to 127.0.0.1 only — peer code-signing via LOCAL_PEERPID is Unix-socket-only
+/// and must not gate this TCP path (it rejects every appex with ECONNRESET).
 public final class AFPSLTCPProxy {
     public static let shared = AFPSLTCPProxy()
 
@@ -83,6 +85,8 @@ public final class AFPSLTCPProxy {
         }
         guard client >= 0 else { return }
 
+        // Loopback-only listen is the real boundary. LOCAL_PEERPID works on
+        // AF_UNIX only (ENOPROTOOPT on TCP) — never reject TCP peers on that basis.
         let unix = Self.connectUnix(unixSocketPath)
         guard unix >= 0 else {
             close(client)

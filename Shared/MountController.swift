@@ -107,13 +107,20 @@ public final class MountController {
             } catch {
                 let ns = error as NSError
                 if ns.domain == NSPOSIXErrorDomain && ns.code == Int(EBUSY) {
-                    if let stale = expectedVolumeURL(for: mountBookmark)
-                        ?? SystemMounts.classic548Mounts().first(where: {
-                            $0.from.lowercased().contains(connectHost.lowercased())
-                        })?.url
+                    // Only force-unmount a mount that matches this bookmark identity.
+                    if let stale = SystemMounts.existingMount(for: mountBookmark)?.url
+                        ?? SystemMounts.existingMount(for: bookmark)?.url
+                        ?? expectedVolumeURL(for: mountBookmark)
                     {
-                        DiagnosticsLog.shared.info("EBUSY — force-unmounting \(stale.path) then retry")
-                        try? await eject(url: stale, force: true)
+                        let stillOurs = SystemMounts.existingMount(for: mountBookmark)?.url.path == stale.path
+                            || SystemMounts.existingMount(for: bookmark)?.url.path == stale.path
+                            || expectedVolumeURL(for: mountBookmark)?.path == stale.path
+                        if stillOurs {
+                            DiagnosticsLog.shared.info("EBUSY — force-unmounting matched \(stale.path) then retry")
+                            try? await eject(url: stale, force: true)
+                        } else {
+                            DiagnosticsLog.shared.info("EBUSY — refusing force-unmount of unmatched path \(stale.path)")
+                        }
                     }
                     mountURL = try await mountSingleVolume(resource: resource)
                 } else {
@@ -232,14 +239,27 @@ public final class MountController {
     }
 
     /// Best-effort unmount of every classic548 volume (used on Quit).
+    /// Runs diskutil off the main thread with a hard timeout so quit cannot hang forever.
     public func unmountAllSync() {
         let urls = Set(
             mounted.values.map(\.path) + SystemMounts.classic548Mounts().map(\.mountPath)
         ).map { URL(fileURLWithPath: $0) }
-        for url in urls {
-            let output = runDiskutil(["unmount", "force", url.path])
-            DiagnosticsLog.shared.info("Quit unmount \(url.path): \(output.status == 0 ? "ok" : output.text)")
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            for url in urls {
+                let output = Self.runProcessSync(
+                    "/usr/sbin/diskutil",
+                    ["unmount", "force", url.path],
+                    timeout: 8
+                )
+                DiagnosticsLog.shared.info(
+                    "Quit unmount \(url.path): \(output.status == 0 ? "ok" : output.text)"
+                )
+            }
+            group.leave()
         }
+        _ = group.wait(timeout: .now() + 20)
         mounted.removeAll()
         statusMessage = L10n.ready
     }
@@ -486,7 +506,7 @@ public final class MountController {
 
         var lastText = ""
         for args in attempts {
-            let result = runDiskutil(args)
+            let result = await runDiskutil(args)
             lastText = result.text
             if result.status == 0 {
                 // Wait briefly for the mount table to drop the entry.
@@ -505,35 +525,85 @@ public final class MountController {
         }
 
         // Last resort: umount(8) — often EPERM for FSKit; still try.
-        let umount = runProcess(
+        let umount = await runProcess(
             "/sbin/umount",
             force ? ["-f", url.path] : [url.path]
         )
         if umount.status == 0 { return }
-        DiagnosticsLog.shared.error("umount failed: \(umount.text)")
+        DiagnosticsLog.shared.error("umount failed: \(umount.text.isEmpty ? lastText : umount.text)")
         throw POSIXError(.EBUSY)
     }
 
-    private func runDiskutil(_ arguments: [String]) -> (status: Int32, text: String) {
-        runProcess("/usr/sbin/diskutil", arguments)
+    private func runDiskutil(_ arguments: [String]) async -> (status: Int32, text: String) {
+        await runProcess("/usr/sbin/diskutil", arguments)
     }
 
-    private func runProcess(_ launchPath: String, _ arguments: [String]) -> (status: Int32, text: String) {
+    private func runProcess(
+        _ launchPath: String,
+        _ arguments: [String],
+        timeout: TimeInterval = 15
+    ) async -> (status: Int32, text: String) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(
+                    returning: Self.runProcessSync(launchPath, arguments, timeout: timeout)
+                )
+            }
+        }
+    }
+
+    /// Pipe-safe process runner: drain stdout/stderr concurrently while waiting, with timeout.
+    private static func runProcessSync(
+        _ launchPath: String,
+        _ arguments: [String],
+        timeout: TimeInterval
+    ) -> (status: Int32, text: String) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: launchPath)
         task.arguments = arguments
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
+
+        // Read concurrently so a full pipe buffer cannot deadlock waitUntilExit.
+        let outputLock = NSLock()
+        var output = Data()
+        let readGroup = DispatchGroup()
+        readGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            outputLock.lock()
+            output = data
+            outputLock.unlock()
+            readGroup.leave()
+        }
+
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
             return (1, error.localizedDescription)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while task.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        var timedOut = false
+        if task.isRunning {
+            timedOut = true
+            task.terminate()
+        }
+        task.waitUntilExit()
+        _ = readGroup.wait(timeout: .now() + 2)
+
+        outputLock.lock()
+        let data = output
+        outputLock.unlock()
         let text = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if timedOut {
+            return (Int32(ETIMEDOUT), text.isEmpty ? "process timed out" : text)
+        }
         return (task.terminationStatus, text)
     }
 

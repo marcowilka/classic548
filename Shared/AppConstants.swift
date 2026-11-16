@@ -8,6 +8,8 @@ public enum AppConstants {
     public static let keychainService = "de.marcowilka.classic548.afp"
     public static let bookmarksDefaultsKey = "bookmarks"
     public static let launchAtLoginKey = "launchAtLogin"
+    /// Width of the favorites list pane in the preferences split view.
+    public static let favoritesSplitListWidthKey = "favoritesSplitListWidth"
 
     /// Team ID from the running code signature (used for shared keychain access group).
     public static var teamID: String {

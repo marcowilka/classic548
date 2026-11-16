@@ -115,14 +115,26 @@ public final class DaemonLauncher {
     public func stop() {
         lock.lock(); defer { lock.unlock() }
         AFPSLTCPProxy.shared.stop()
-        // Only terminate the process we started — never kill foreign afpsld.
-        if let process, process.isRunning {
-            process.terminate()
-            DiagnosticsLog.shared.info("afpsld stopped (pid \(process.processIdentifier))")
+        // Never kill / exit-IPC a daemon we only adopted (other ClassicAFP or leftover mount).
+        let ownsDaemon = !adoptedLiveSocket && process != nil
+        if ownsDaemon, let process {
+            if process.isRunning {
+                DiagnosticsLog.shared.info("afpsld stopping owned pid \(process.processIdentifier)")
+                process.terminate()
+                let deadline = Date().addingTimeInterval(2.0)
+                while process.isRunning, Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if process.isRunning {
+                    process.interrupt()
+                }
+            }
+            AFPClient.exitDaemon()
+        } else {
+            DiagnosticsLog.shared.info("afpsld stop: leaving adopted/foreign daemon running")
         }
         process = nil
         adoptedLiveSocket = false
-        AFPClient.exitDaemon()
     }
 
     private func ensureProxyLocked(socketPath: String) throws {

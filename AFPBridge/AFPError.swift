@@ -15,6 +15,7 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
     /// Volume attach failed after an authenticated session exists.
     case attachFailed(errno: Int32)
     case passwordTooLong
+    case fieldTooLong(String)
     case unexpected(String)
 
     public static var errorDomain: String { "AFPBridge.AFPError" }
@@ -41,6 +42,8 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
             return 1200 + Int(Self.absErrno(errno))
         case .passwordTooLong:
             return 1007
+        case .fieldTooLong:
+            return 1009
         case .unexpected:
             return 1006
         }
@@ -83,7 +86,9 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
             let e = Self.absErrno(errno)
             return "AFP volume attach failed (errno \(e): \(String(cString: strerror(e))))"
         case .passwordTooLong:
-            return "AFP password too long (max 127 UTF-8 bytes)"
+            return "AFP password too long (max 126 UTF-8 bytes)"
+        case .fieldTooLong(let field):
+            return "AFP \(field) too long"
         case .unexpected(let message):
             return message
         }
@@ -112,6 +117,19 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
         }
     }
 
+    /// Session/network broken — local attach handle must be dropped and reconnected.
+    public var isSessionStale: Bool {
+        if case .daemonUnavailable = self { return true }
+        if case .resumeFailed = self { return true }
+        guard let code = rawErrno else { return false }
+        switch code {
+        case ECONNRESET, ETIMEDOUT, ENOTCONN, EPIPE, ENETDOWN, ENETUNREACH, EHOSTUNREACH:
+            return true
+        default:
+            return false
+        }
+    }
+
     public var rawErrno: Int32? {
         switch self {
         case .posix(let code), .loginFailed(let code), .resumeFailed(let code), .attachFailed(let code):
@@ -129,19 +147,15 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
         case .attachFailed, .attachRequiresPassword: return "attach"
         case .daemonUnavailable: return "daemon"
         case .passwordTooLong: return "password"
+        case .fieldTooLong: return "field"
         default: return "other"
         }
     }
 
-    /// Shim / libafpsl return negative errno. Never treat bare `-1` as “daemon down”:
-    /// on Darwin `EPERM == 1`, so `-EPERM == -1`. The C shim must resolve literal `-1`
-    /// via `errno` before Swift sees it.
+    /// File ops: always `.posix`. Never remap to daemon — EPERM/ENOENT are real FS results.
+    /// Bare `-1` must not reach Swift; the library/IPC layer returns `-errno`.
     public static func fromErrno(_ code: Int32) -> AFPError {
-        let errnoCode = absErrno(code)
-        if isDaemonErrno(errnoCode) {
-            return .daemonUnavailable
-        }
-        return .posix(errnoCode)
+        .posix(absErrno(code))
     }
 
     public static func loginFromErrno(_ code: Int32) -> AFPError {
@@ -149,7 +163,13 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
         if isDaemonErrno(errnoCode) {
             return .daemonUnavailable
         }
-        return .loginFailed(errno: errnoCode)
+        // ECONNRESET/ETIMEDOUT are transport — not a NAS credential rejection.
+        switch errnoCode {
+        case ECONNRESET, ETIMEDOUT, EPIPE, ENETDOWN, ENETUNREACH, EHOSTUNREACH:
+            return .posix(errnoCode)
+        default:
+            return .loginFailed(errno: errnoCode)
+        }
     }
 
     public static func resumeFromErrno(_ code: Int32) -> AFPError {
@@ -168,9 +188,9 @@ public enum AFPError: Error, LocalizedError, CustomNSError, Sendable {
         return .attachFailed(errno: errnoCode)
     }
 
+    /// Narrow IPC/proxy failures only (login / resume / attach).
     private static func isDaemonErrno(_ code: Int32) -> Bool {
-        // EPERM: sandboxed appex blocked from Unix-connecting to afpsld (e.g. /tmp).
-        code == ECONNREFUSED || code == ENOENT || code == ENOTSOCK || code == EPERM
+        code == ECONNREFUSED || code == ENOTSOCK
     }
 
     private static func absErrno(_ code: Int32) -> Int32 {

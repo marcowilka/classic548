@@ -15,7 +15,8 @@ typedef void *AFPVolumeHandle;
 
 typedef struct AFPShimURL {
     char username[128];
-    char password[128];
+    /* Matches afpc_url.password[AFPC_MAX_PASSWORD_LEN == 127] (126 UTF-8 + NUL). */
+    char password[127];
     char servername[256];
     char volumename[256];
     char path[1024];

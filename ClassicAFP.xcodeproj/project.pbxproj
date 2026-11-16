@@ -22,6 +22,7 @@
 		4C429189C238DFBE7BCBB43A /* AFPIPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC4D45143C2295E59660804 /* AFPIPC.swift */; };
 		4DAC295965C26A404646653D /* SystemMounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDED2FEBF285FB4435B4D0E /* SystemMounts.swift */; };
 		4E318C30FDCE51E594889E8C /* AFPVolumeBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF582326EE6CFDBCFF5119F /* AFPVolumeBrowser.swift */; };
+		50B6CB03C7F157E8405CCB51 /* AppWindowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5AC16C964EC6BA00703C235 /* AppWindowPresentation.swift */; };
 		541AE23654BE89A37E86E765 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99E0973521851997ECD174D9 /* StatusItemController.swift */; };
 		55841147D0BCBAF795F75E4C /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 0732CF1CAF89A566C53E4915 /* Localizable.xcstrings */; };
 		63A67DB43123453311A9C30E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A23B6B3C13AEC0F711DE6F9 /* AppDelegate.swift */; };
@@ -147,6 +148,7 @@
 		B9021ED059E7367CE72840A5 /* HostResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostResolver.swift; sourceTree = "<group>"; };
 		C0B939C9414AE06A62DDD18B /* DaemonLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLauncher.swift; sourceTree = "<group>"; };
 		C57C7EEDF77EBAFA17B66252 /* ClassicAFP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClassicAFP.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C5AC16C964EC6BA00703C235 /* AppWindowPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppWindowPresentation.swift; sourceTree = "<group>"; };
 		D111C4AA687302ED6DDD118C /* MountController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountController.swift; sourceTree = "<group>"; };
 		D4CD4C4F28D322D6A75A2BA6 /* FinderAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderAccess.swift; sourceTree = "<group>"; };
 		D4E394864BA29EA1888999B2 /* DiagnosticsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsWindowController.swift; sourceTree = "<group>"; };
@@ -193,6 +195,7 @@
 			isa = PBXGroup;
 			children = (
 				2A23B6B3C13AEC0F711DE6F9 /* AppDelegate.swift */,
+				C5AC16C964EC6BA00703C235 /* AppWindowPresentation.swift */,
 				E6445EA78D657907001C87D1 /* ClassicAFP.entitlements */,
 				41B1F2D3219BF493BC83262F /* ClassicAFP.release.entitlements */,
 				D4E394864BA29EA1888999B2 /* DiagnosticsWindowController.swift */,
@@ -549,6 +552,7 @@
 				4E318C30FDCE51E594889E8C /* AFPVolumeBrowser.swift in Sources */,
 				980C1E47D0503649AEAD34B2 /* AppConstants.swift in Sources */,
 				63A67DB43123453311A9C30E /* AppDelegate.swift in Sources */,
+				50B6CB03C7F157E8405CCB51 /* AppWindowPresentation.swift in Sources */,
 				94CC7BC51737D5345EC04FD0 /* BonjourBrowser.swift in Sources */,
 				279A3F52CA607CD7C93970A8 /* Bookmark.swift in Sources */,
 				10DF077D7A90A0B3CA13C610 /* BookmarkStore.swift in Sources */,

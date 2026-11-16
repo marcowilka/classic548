@@ -1,7 +1,8 @@
 import Foundation
 
 /// Thread-safe wrapper around Netatalk Client via `AFPShim` (IPC to `afpsld`).
-/// C API comes from `AFPBridge-Bridging-Header.h`.
+/// One live session per instance: connect/resume replace any prior server/volume;
+/// attach replaces a prior volume. C API comes from `AFPBridge-Bridging-Header.h`.
 public final class AFPClient: @unchecked Sendable {
     public struct DirectoryEntry: Sendable {
         public let name: String
@@ -16,6 +17,18 @@ public final class AFPClient: @unchecked Sendable {
         public init(fileID: UInt32) { self.fileID = fileID }
     }
 
+    /// Matches `afpc_url.password[AFPC_MAX_PASSWORD_LEN]` (127 bytes including NUL).
+    public static let maxPasswordUTF8Bytes = 126
+    /// `AFPC_MAX_USERNAME_LEN - 1`
+    public static let maxUsernameUTF8Bytes = 126
+    /// `AFPC_SERVER_NAME_UTF8_LEN - 1`
+    public static let maxServerUTF8Bytes = 254
+    /// `AFPC_VOLUME_NAME_UTF8_LEN - 1`
+    public static let maxVolumeUTF8Bytes = 254
+    /// Shim `AFPShimURL.path` capacity minus NUL.
+    public static let maxPathUTF8Bytes = 1023
+    private static let maxWriteChunk = 1 * 1024 * 1024
+
     private let lock = NSLock()
     private var server: AFPServerHandle?
     private var volume: AFPVolumeHandle?
@@ -28,9 +41,6 @@ public final class AFPClient: @unchecked Sendable {
         try? disconnect()
     }
 
-    /// Shim password field is 128 bytes including NUL.
-    public static let maxPasswordUTF8Bytes = 127
-
     public var isAttached: Bool {
         lock.lock(); defer { lock.unlock() }
         return volume != nil
@@ -38,14 +48,16 @@ public final class AFPClient: @unchecked Sendable {
 
     public func connect(to components: AFPURLComponents, guest: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
+        resetSessionBestEffortLocked()
         var login = components
         let uams: UInt32
         if guest {
             login.username = ""
             login.password = ""
+            try Self.validateFields(login, requirePassword: false)
             uams = afp_shim_guest_uams()
         } else {
-            try Self.validatePasswordLength(login.password)
+            try Self.validateFields(login)
             uams = afp_shim_default_uams()
         }
         var handle: AFPServerHandle?
@@ -54,20 +66,28 @@ public final class AFPClient: @unchecked Sendable {
         if rc != 0 {
             throw AFPError.loginFromErrno(rc)
         }
+        guard let handle else {
+            throw AFPError.unexpected("afp_shim_connect returned success with null server handle")
+        }
         server = handle
         connectedURL = login
     }
 
     public func resume(to components: AFPURLComponents) throws {
         lock.lock(); defer { lock.unlock() }
+        resetSessionBestEffortLocked()
         var handle: AFPServerHandle?
         // Resume must be password-less — clear any leftover before IPC.
         var resumeComponents = components
         resumeComponents.password = ""
+        try Self.validateFields(resumeComponents, requirePassword: false)
         let url = makeShimURL(resumeComponents)
         let rc = withUnsafePointer(to: url) { afp_shim_resume($0, afp_shim_default_uams(), &handle) }
         if rc != 0 {
             throw AFPError.resumeFromErrno(rc)
+        }
+        guard let handle else {
+            throw AFPError.unexpected("afp_shim_resume returned success with null server handle")
         }
         server = handle
         connectedURL = resumeComponents
@@ -86,8 +106,12 @@ public final class AFPClient: @unchecked Sendable {
     public func attach(volumeName: String? = nil) throws {
         lock.lock(); defer { lock.unlock() }
         guard let server else { throw AFPError.notConnected }
+        if volume != nil {
+            detachBestEffortLocked()
+        }
         var components = connectedURL
         if let volumeName { components.volume = volumeName }
+        try Self.validateField(components.volume, name: "volume", max: Self.maxVolumeUTF8Bytes)
         var volumeHandle: AFPVolumeHandle?
         var needsPassword: Int32 = 0
         let url = makeShimURL(components)
@@ -97,6 +121,9 @@ public final class AFPClient: @unchecked Sendable {
         if rc != 0 {
             if needsPassword != 0 { throw AFPError.attachRequiresPassword }
             throw AFPError.attachFromErrno(rc)
+        }
+        guard let volumeHandle else {
+            throw AFPError.unexpected("afp_shim_attach returned success with null volume handle")
         }
         volume = volumeHandle
         connectedURL = components
@@ -209,6 +236,9 @@ public final class AFPClient: @unchecked Sendable {
     public func read(_ file: OpenFile, offset: UInt64, length: UInt32) throws -> (Data, eof: Bool) {
         lock.lock(); defer { lock.unlock() }
         guard volume != nil else { throw AFPError.notConnected }
+        if length == 0 {
+            return (Data(), false)
+        }
         var handle = volume
         var buffer = [CChar](repeating: 0, count: Int(length))
         var received: UInt32 = 0
@@ -216,6 +246,9 @@ public final class AFPClient: @unchecked Sendable {
         let rc = afp_shim_read(&handle, file.fileID, offset, length, &buffer, &received, &eof)
         volume = handle
         try throwIfNeeded(rc)
+        guard received <= length else {
+            throw AFPError.unexpected("afp_shim_read returned \(received) bytes for request of \(length)")
+        }
         let data = Data(bytes: buffer, count: Int(received))
         return (data, eof != 0)
     }
@@ -223,21 +256,37 @@ public final class AFPClient: @unchecked Sendable {
     public func write(_ file: OpenFile, offset: UInt64, data: Data) throws -> Int {
         lock.lock(); defer { lock.unlock() }
         guard volume != nil else { throw AFPError.notConnected }
-        var handle = volume
-        var written: UInt32 = 0
-        let rc = data.withUnsafeBytes { raw in
-            afp_shim_write(
-                &handle,
-                file.fileID,
-                offset,
-                raw.bindMemory(to: CChar.self).baseAddress,
-                UInt32(data.count),
-                &written
-            )
+        if data.isEmpty {
+            return 0
         }
-        volume = handle
-        try throwIfNeeded(rc)
-        return Int(written)
+        var handle = volume
+        var totalWritten = 0
+        var cursor = offset
+        while totalWritten < data.count {
+            let chunkSize = min(Self.maxWriteChunk, data.count - totalWritten)
+            var written: UInt32 = 0
+            let rc = data.withUnsafeBytes { raw -> Int32 in
+                guard let base = raw.bindMemory(to: CChar.self).baseAddress else {
+                    return -EFAULT
+                }
+                return afp_shim_write(
+                    &handle,
+                    file.fileID,
+                    cursor,
+                    base + totalWritten,
+                    UInt32(chunkSize),
+                    &written
+                )
+            }
+            volume = handle
+            try throwIfNeeded(rc)
+            if written == 0 {
+                throw AFPError.unexpected("afp_shim_write wrote 0 bytes")
+            }
+            totalWritten += Int(written)
+            cursor += UInt64(written)
+        }
+        return totalWritten
     }
 
     public func createFile(_ path: String, mode: mode_t = 0o644) throws {
@@ -312,17 +361,51 @@ public final class AFPClient: @unchecked Sendable {
         var url = AFPShimURL()
         url.port = Int32(components.port)
         assign(&url.username.0, components.username, 128)
-        assign(&url.password.0, components.password, 128)
+        assign(&url.password.0, components.password, 127)
         assign(&url.servername.0, components.host, 256)
         assign(&url.volumename.0, components.volume, 256)
         assign(&url.path.0, components.path, 1024)
         return url
     }
 
+    private static func validateFields(_ components: AFPURLComponents, requirePassword: Bool = true) throws {
+        try validateField(components.username, name: "username", max: maxUsernameUTF8Bytes)
+        try validateField(components.host, name: "server", max: maxServerUTF8Bytes)
+        try validateField(components.volume, name: "volume", max: maxVolumeUTF8Bytes)
+        try validateField(components.path, name: "path", max: maxPathUTF8Bytes)
+        if requirePassword {
+            try validatePasswordLength(components.password)
+        }
+    }
+
+    private static func validateField(_ value: String, name: String, max: Int) throws {
+        if value.utf8.count > max {
+            throw AFPError.fieldTooLong(name)
+        }
+    }
+
     private static func validatePasswordLength(_ password: String) throws {
         if password.utf8.count > maxPasswordUTF8Bytes {
             throw AFPError.passwordTooLong
         }
+    }
+
+    private func resetSessionBestEffortLocked() {
+        detachBestEffortLocked()
+        if server != nil {
+            var handle = server
+            _ = afp_shim_disconnect(&handle)
+            server = nil
+            volume = nil
+        }
+    }
+
+    private func detachBestEffortLocked() {
+        guard volume != nil else { return }
+        var handle = volume
+        let url = makeShimURL(connectedURL)
+        _ = withUnsafePointer(to: url) { afp_shim_detach(&handle, $0) }
+        volume = nil
     }
 
     private func assign(_ dest: UnsafeMutablePointer<CChar>, _ value: String, _ max: Int) {

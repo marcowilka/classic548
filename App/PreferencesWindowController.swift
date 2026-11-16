@@ -1,9 +1,13 @@
 import AppKit
 import ServiceManagement
 
-final class PreferencesWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+final class PreferencesWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSSplitViewDelegate {
+    private static let bookmarkRowPasteboardType = NSPasteboard.PasteboardType("de.marcowilka.classic548.bookmark-row")
+    private static let defaultListPaneWidth: CGFloat = 320
+
     private var bookmarks: [Bookmark] = []
     private let tableView = NSTableView()
+    private let reorderHintLabel = NSTextField(labelWithString: "")
     private let nameField = NSTextField()
     private let hostField = NSTextField()
     private let portField = NSTextField()
@@ -14,6 +18,9 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
     private let guestAccessButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let autoConnectButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private weak var favoritesSplitView: NSSplitView?
+    /// Skip persisting while Auto Layout settles and we restore the saved width.
+    private var isRestoringSplitPosition = true
     private var selectedID: UUID?
     private var knownVolumes: [String] = []
     /// Host:port the current `knownVolumes` were fetched for (nil = none / stale).
@@ -24,11 +31,12 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
     convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = L10n.favoritesTitle
+        window.minSize = NSSize(width: 640, height: 420)
         window.center()
         self.init(window: window)
         window.contentView = buildContent()
@@ -39,7 +47,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
 
     func showWindow(prefill: Bookmark?) {
         window?.title = L10n.favoritesTitle
-        showWindow(nil)
+        AppWindowPresentation.present(self)
         if let prefill {
             applyForm(prefill)
             selectedID = nil
@@ -63,8 +71,15 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         tableView.rowHeight = 28
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .regular
+        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.registerForDraggedTypes([Self.bookmarkRowPasteboardType])
+        tableView.setDraggingSourceOperationMask(.move, forLocal: true)
+        tableView.draggingDestinationFeedbackStyle = .gap
+        tableView.toolTip = L10n.reorderFavoritesHint
         let column = NSTableColumn(identifier: .init("name"))
         column.width = 260
+        column.minWidth = 120
+        column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
         tableView.delegate = self
         tableView.dataSource = self
@@ -72,11 +87,21 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         tableView.action = #selector(selectionChanged)
         scroll.documentView = tableView
 
+        reorderHintLabel.stringValue = L10n.reorderFavoritesHint
+        reorderHintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        reorderHintLabel.textColor = .secondaryLabelColor
+        reorderHintLabel.lineBreakMode = .byTruncatingTail
+        reorderHintLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Must not drive NSSplitView / window width via intrinsic content size.
+        reorderHintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        reorderHintLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
         let form = NSStackView()
         form.translatesAutoresizingMaskIntoConstraints = false
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = 10
+        form.setHuggingPriority(.defaultLow, for: .horizontal)
 
         func labeledField(_ title: String, _ field: NSTextField) -> NSView {
             let row = NSStackView()
@@ -155,8 +180,46 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         connectButton.translatesAutoresizingMaskIntoConstraints = false
         connectButton.keyEquivalent = "\r"
 
-        root.addSubview(scroll)
-        root.addSubview(form)
+        let formPane = NSView()
+        formPane.translatesAutoresizingMaskIntoConstraints = false
+        formPane.addSubview(form)
+        NSLayoutConstraint.activate([
+            form.leadingAnchor.constraint(equalTo: formPane.leadingAnchor, constant: 12),
+            form.topAnchor.constraint(equalTo: formPane.topAnchor),
+            form.trailingAnchor.constraint(lessThanOrEqualTo: formPane.trailingAnchor, constant: -8),
+            form.bottomAnchor.constraint(lessThanOrEqualTo: formPane.bottomAnchor)
+        ])
+
+        let listPane = NSView()
+        listPane.translatesAutoresizingMaskIntoConstraints = false
+        listPane.addSubview(scroll)
+        listPane.addSubview(reorderHintLabel)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: listPane.trailingAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: listPane.topAnchor),
+            reorderHintLabel.leadingAnchor.constraint(equalTo: listPane.leadingAnchor, constant: 2),
+            reorderHintLabel.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -2),
+            reorderHintLabel.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 6),
+            reorderHintLabel.bottomAnchor.constraint(equalTo: listPane.bottomAnchor)
+        ])
+
+        let split = NSSplitView()
+        split.isVertical = true
+        split.dividerStyle = .thin
+        // Auto Layout fights NSSplitView's frame autosave — persist width ourselves.
+        split.delegate = self
+        split.translatesAutoresizingMaskIntoConstraints = false
+        split.addArrangedSubview(listPane)
+        split.addArrangedSubview(formPane)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(240), forSubviewAt: 1)
+        listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        listPane.widthAnchor.constraint(lessThanOrEqualToConstant: 420).isActive = true
+        formPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
+        favoritesSplitView = split
+
+        root.addSubview(split)
         root.addSubview(addButton)
         root.addSubview(removeButton)
         root.addSubview(connectButton)
@@ -170,17 +233,11 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             root.topAnchor.constraint(equalTo: container.topAnchor),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            root.widthAnchor.constraint(equalToConstant: 760),
-            root.heightAnchor.constraint(equalToConstant: 460),
 
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            scroll.widthAnchor.constraint(equalToConstant: 280),
-            scroll.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -12),
-
-            form.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 20),
-            form.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            form.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -16),
+            split.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            split.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+            split.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+            split.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -12),
 
             addButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             addButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
@@ -190,13 +247,31 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             removeButton.centerYAnchor.constraint(equalTo: addButton.centerYAnchor),
             removeButton.heightAnchor.constraint(equalToConstant: 28),
 
-            connectButton.trailingAnchor.constraint(equalTo: form.leadingAnchor, constant: 130 + 8 + 260 + 8 + 32),
+            connectButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             connectButton.centerYAnchor.constraint(equalTo: addButton.centerYAnchor),
             connectButton.heightAnchor.constraint(equalToConstant: 28),
             connectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
 
+        let savedWidth = UserDefaults.standard.double(forKey: AppConstants.favoritesSplitListWidthKey)
+        let listWidth = savedWidth > 0 ? CGFloat(savedWidth) : Self.defaultListPaneWidth
+        DispatchQueue.main.async { [weak self, weak split] in
+            split?.setPosition(listWidth, ofDividerAt: 0)
+            self?.isRestoringSplitPosition = false
+        }
+
         return container
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard !isRestoringSplitPosition,
+              let split = notification.object as? NSSplitView,
+              split === favoritesSplitView,
+              let listPane = split.arrangedSubviews.first
+        else { return }
+        let width = listPane.bounds.width
+        guard width > 0 else { return }
+        UserDefaults.standard.set(Double(width), forKey: AppConstants.favoritesSplitListWidthKey)
     }
 
     private func reload() {
@@ -214,22 +289,83 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         } else {
             cell = NSTableCellView()
             cell.identifier = id
+
+            let handle = NSImageView()
+            handle.identifier = NSUserInterfaceItemIdentifier("DragHandle")
+            handle.translatesAutoresizingMaskIntoConstraints = false
+            handle.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: L10n.reorderFavoritesHint)
+            handle.contentTintColor = .tertiaryLabelColor
+            handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+            handle.toolTip = L10n.reorderFavoritesHint
+
             let text = NSTextField(labelWithString: "")
             text.translatesAutoresizingMaskIntoConstraints = false
             text.lineBreakMode = .byTruncatingTail
             text.drawsBackground = false
             text.isBezeled = false
             text.isEditable = false
+
+            cell.addSubview(handle)
             cell.addSubview(text)
             cell.textField = text
             NSLayoutConstraint.activate([
-                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                handle.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                handle.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                handle.widthAnchor.constraint(equalToConstant: 12),
+                handle.heightAnchor.constraint(equalToConstant: 12),
+                text.leadingAnchor.constraint(equalTo: handle.trailingAnchor, constant: 6),
                 text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
                 text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
             ])
         }
         cell.textField?.stringValue = bookmarks[row].displayName
+        cell.toolTip = L10n.reorderFavoritesHint
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+        guard bookmarks.indices.contains(row) else { return nil }
+        let item = NSPasteboardItem()
+        item.setString(bookmarks[row].id.uuidString, forType: Self.bookmarkRowPasteboardType)
+        return item
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: any NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard info.draggingPasteboard.availableType(from: [Self.bookmarkRowPasteboardType]) != nil else {
+            return []
+        }
+        if dropOperation == .on {
+            tableView.setDropRow(row, dropOperation: .above)
+        }
+        return .move
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: any NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard let idString = info.draggingPasteboard.string(forType: Self.bookmarkRowPasteboardType),
+              let id = UUID(uuidString: idString),
+              let from = bookmarks.firstIndex(where: { $0.id == id }),
+              let reordered = BookmarkStore.shared.move(from: from, to: row)
+        else {
+            return false
+        }
+        bookmarks = reordered
+        tableView.reloadData()
+        if let newRow = bookmarks.firstIndex(where: { $0.id == id }) {
+            tableView.selectRowIndexes(IndexSet(integer: newRow), byExtendingSelection: false)
+            selectedID = id
+        }
+        NotificationCenter.default.post(name: .init("ClassicAFPBookmarksChanged"), object: nil)
+        return true
     }
 
     func controlTextDidChange(_ obj: Notification) {

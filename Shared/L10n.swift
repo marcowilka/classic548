@@ -29,6 +29,7 @@ public enum L10n {
     public static var addUpdate: String { t("favorites.addUpdate") }
     public static var remove: String { t("favorites.remove") }
     public static var connect: String { t("favorites.connect") }
+    public static var reorderFavoritesHint: String { t("favorites.reorderHint") }
 
     // Menu
     public static var ready: String { t("menu.ready") }

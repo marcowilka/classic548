@@ -23,6 +23,9 @@ final class DiagnosticsWindowController: NSWindowController {
         scroll.borderType = .bezelBorder
         textView.isEditable = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textColor = .labelColor
+        textView.backgroundColor = .textBackgroundColor
+        textView.drawsBackground = true
         textView.autoresizingMask = [.width, .height]
         scroll.documentView = textView
         root.addSubview(scroll)

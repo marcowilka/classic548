@@ -2,6 +2,12 @@ import Foundation
 import FSKit
 
 final class AFPItem: FSItem {
+    struct OpenState {
+        var fileID: UInt32
+        var writable: Bool
+        var refCount: Int
+    }
+
     let path: String
     let name: String
     var itemType: FSItem.ItemType
@@ -10,7 +16,8 @@ final class AFPItem: FSItem {
     var size: UInt64
     var mode: mode_t
     var mtime: Date
-    var openFileID: UInt32?
+    /// Shared AFP fork for this item — refcounted; upgrade read→write by reopen.
+    var openState: OpenState?
 
     init(
         path: String,

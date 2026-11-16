@@ -48,8 +48,8 @@ public enum KeychainStore {
         let aliases = uniqueServers(servers)
         for server in aliases {
             if let shared = copyGeneric(account: account, server: server, port: port, shared: true) {
-                // Fill missing aliases without running destructive legacy cleanup.
-                mirrorToMissingAliases(shared, account: account, servers: aliases, port: port, present: server)
+                // Keep every alias on the same secret (overwrite stale values).
+                syncPasswordToAllAliases(shared, account: account, servers: aliases, port: port)
                 return shared
             }
         }
@@ -86,17 +86,15 @@ public enum KeychainStore {
         return ordered
     }
 
-    private static func mirrorToMissingAliases(
+    /// Write/update the password under every host alias so IP/hostname never diverge.
+    private static func syncPasswordToAllAliases(
         _ password: String,
         account: String,
         servers: [String],
-        port: Int,
-        present: String
+        port: Int
     ) {
-        for server in servers where server != present {
-            if copyGeneric(account: account, server: server, port: port, shared: true) == nil {
-                try? savePasswordSingle(password, account: account, server: server, port: port)
-            }
+        for server in uniqueServers(servers) {
+            try? savePasswordSingle(password, account: account, server: server, port: port)
         }
     }
 

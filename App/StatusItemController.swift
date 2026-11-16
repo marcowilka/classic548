@@ -53,23 +53,30 @@ final class StatusItemController {
         } else {
             for bookmark in bookmarks {
                 let mounted = MountController.shared.isMounted(bookmark)
-                if mounted {
-                    let header = NSMenuItem(
-                        title: bookmark.displayName,
-                        action: nil,
-                        keyEquivalent: ""
-                    )
-                    header.isEnabled = false
-                    menu.addItem(header)
+                let idString = bookmark.id.uuidString
 
+                let favorite = NSMenuItem(title: bookmark.displayName, action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+
+                let connect = NSMenuItem(
+                    title: L10n.connect,
+                    action: #selector(toggleBookmark(_:)),
+                    keyEquivalent: ""
+                )
+                connect.target = self
+                connect.representedObject = idString
+                connect.isEnabled = !mounted
+                submenu.addItem(connect)
+
+                if mounted {
                     let reveal = NSMenuItem(
                         title: L10n.openInFinder,
                         action: #selector(revealBookmark(_:)),
                         keyEquivalent: ""
                     )
                     reveal.target = self
-                    reveal.representedObject = bookmark.id.uuidString
-                    menu.addItem(reveal)
+                    reveal.representedObject = idString
+                    submenu.addItem(reveal)
 
                     let eject = NSMenuItem(
                         title: L10n.eject,
@@ -77,18 +84,12 @@ final class StatusItemController {
                         keyEquivalent: ""
                     )
                     eject.target = self
-                    eject.representedObject = bookmark.id.uuidString
-                    menu.addItem(eject)
-                } else {
-                    let item = NSMenuItem(
-                        title: L10n.connectNamed(bookmark.displayName),
-                        action: #selector(toggleBookmark(_:)),
-                        keyEquivalent: ""
-                    )
-                    item.target = self
-                    item.representedObject = bookmark.id.uuidString
-                    menu.addItem(item)
+                    eject.representedObject = idString
+                    submenu.addItem(eject)
                 }
+
+                favorite.submenu = submenu
+                menu.addItem(favorite)
             }
         }
 
@@ -107,11 +108,12 @@ final class StatusItemController {
             menu.addItem(.separator())
         }
 
-        let prefs = NSMenuItem(title: L10n.favoritesSettings, action: #selector(showPreferences), keyEquivalent: ",")
+        // LSUIElement agent: status-menu key equivalents never fire (no app focus).
+        let prefs = NSMenuItem(title: L10n.favoritesSettings, action: #selector(showPreferences), keyEquivalent: "")
         prefs.target = self
         menu.addItem(prefs)
 
-        let diag = NSMenuItem(title: L10n.diagnostics, action: #selector(showDiagnostics), keyEquivalent: "d")
+        let diag = NSMenuItem(title: L10n.diagnostics, action: #selector(showDiagnostics), keyEquivalent: "")
         diag.target = self
         menu.addItem(diag)
 
@@ -120,7 +122,7 @@ final class StatusItemController {
         menu.addItem(ext)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: L10n.quit, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L10n.quit, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         menu.addItem(quit)
 
         statusItem.menu = menu
@@ -184,7 +186,6 @@ final class StatusItemController {
             preferencesWindow = PreferencesWindowController()
         }
         preferencesWindow?.showWindow(prefill: prefill)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func openExtensions() {
@@ -195,8 +196,9 @@ final class StatusItemController {
         if diagnosticsWindow == nil {
             diagnosticsWindow = DiagnosticsWindowController()
         }
-        diagnosticsWindow?.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if let diagnosticsWindow {
+            AppWindowPresentation.present(diagnosticsWindow)
+        }
         Task {
             _ = await MountController.shared.refreshExtensionStatus()
         }
