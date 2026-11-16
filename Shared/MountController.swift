@@ -481,8 +481,23 @@ public final class MountController {
             return "FSKit mount not permitted — enable File System Extensions / grant fskit.mount (see Diagnostics)"
         }
         let combined = "\(ns.domain) \(ns.localizedDescription) \(ns.userInfo)"
-        if combined.localizedCaseInsensitiveContains("same bundle ID already exists with a different path") {
-            return "FSKit extension path conflict — quit ClassicAFP + Finder, then: pluginkit -r -i \(AppConstants.fsExtensionBundleID); use one build only (Xcode Run OR build/, not both), enable the appex again"
+        if combined.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
+            || combined.localizedCaseInsensitiveContains("Client not authorized")
+            || ns.domain == "RBSServiceErrorDomain"
+            || (ns.domain == "com.apple.extensionKit.errorDomain"
+                && combined.localizedCaseInsensitiveContains("RBSServiceErrorDomain"))
+        {
+            return "FSKit extension not authorized / path conflict — quit every ClassicAFP (Apps + Xcode), then: pluginkit -r -i \(AppConstants.fsExtensionBundleID); use one build only; re-enable File System Extensions"
+        }
+        // Nested underlying errors (extensionKit wraps RBS).
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            let u = "\(underlying.domain) \(underlying.localizedDescription) \(underlying.userInfo)"
+            if u.localizedCaseInsensitiveContains("Client not authorized")
+                || underlying.domain == "RBSServiceErrorDomain"
+                || u.localizedCaseInsensitiveContains("same bundle ID already exists with a different path")
+            {
+                return "FSKit extension not authorized / path conflict — quit every ClassicAFP (Apps + Xcode), then: pluginkit -r -i \(AppConstants.fsExtensionBundleID); use one build only; re-enable File System Extensions"
+            }
         }
         return "\(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
     }

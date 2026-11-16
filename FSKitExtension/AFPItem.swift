@@ -8,8 +8,9 @@ final class AFPItem: FSItem {
         var refCount: Int
     }
 
-    let path: String
-    let name: String
+    /// Mutable so rename can keep this object (and its open fork) at the new path.
+    var path: String
+    var name: String
     var itemType: FSItem.ItemType
     var fileID: FSItem.Identifier
     var parentID: FSItem.Identifier

@@ -54,10 +54,26 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
 
     private func clearAllOpenHandlesLocked() {
         for item in itemsByPath.values {
-            if let state = item.openState {
-                try? client.close(.init(fileID: state.fileID))
-                item.openState = nil
-            }
+            forceCloseOpenFork(item, reason: "clearAll")
+        }
+    }
+
+    private func forceCloseOpenFork(_ item: AFPItem, reason: String) {
+        guard let state = item.openState else { return }
+        do {
+            try client.close(.init(fileID: state.fileID))
+        } catch {
+            extensionTrace("\(reason) close fork failed path=\(item.path) fileID=\(state.fileID): \(error)")
+        }
+        item.openState = nil
+        extensionTrace("\(reason) force-closed fork path=\(item.path) fileID=\(state.fileID)")
+    }
+
+    private func removePath(_ item: AFPItem) throws {
+        if item.itemType == .directory {
+            try client.rmdir(item.path)
+        } else {
+            try client.unlink(item.path)
         }
     }
 
@@ -154,7 +170,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 reply(FSActivateResult(rootItem: self.rootItem), nil)
             } catch {
                 log.error("activate failed: \(error.localizedDescription, privacy: .public)")
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -211,7 +227,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 let attrs = self.attributes(for: item, request: FSLookupItemResult.requestedAttributes)
                 reply(FSLookupItemResult(foundItem: item, itemName: FSFileName(string: childName), itemAttributes: attrs), nil)
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -237,7 +253,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 let attrs = self.attributes(for: item, request: desiredAttributes)
                 reply(FSGetAttributesResult(attributes: attrs), nil)
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -266,7 +282,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 let attrs = self.attributes(for: item, request: FSSetAttributesResult.requestedAttributes)
                 reply(FSSetAttributesResult(attributes: attrs, freeSpace: nil), nil)
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -328,7 +344,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 _ = page.endOfDir
                 reply(FSEnumerateDirectoryResult(verifier: currentVerifier.rawValue), nil)
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -355,26 +371,32 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 switch type {
                 case .directory:
                     try self.client.mkdir(path)
+                    extensionTrace("mkdir OK \(path)")
                 case .file:
                     try self.client.createFile(path)
+                    extensionTrace("creat OK \(path)")
                 default:
                     throw fs_error(.ENOTSUP, "Unsupported item type")
                 }
                 let item = try self.item(at: path, name: childName, parent: directory)
                 let itemAttrs = self.attributes(for: item, request: FSCreateItemResult.requestedAttributes)
                 let dirAttrs = self.attributes(for: directory, request: FSCreateItemResult.requestedAttributes)
-                reply(
-                    FSCreateItemResult(
-                        newItem: item,
-                        newItemName: FSFileName(string: childName),
-                        newItemAttributes: itemAttrs,
-                        directoryAttributes: dirAttrs,
-                        freeSpace: nil
-                    ),
-                    nil
-                )
+                guard let result = FSCreateItemResult(
+                    newItem: item,
+                    newItemName: FSFileName(string: childName),
+                    newItemAttributes: itemAttrs,
+                    directoryAttributes: dirAttrs,
+                    freeSpace: nil
+                ) else {
+                    extensionTrace("createItem FSCreateItemResult nil path=\(path)")
+                    reply(nil, fs_error(.EIO, "FSCreateItemResult validation failed"))
+                    return
+                }
+                reply(result, nil)
             } catch {
-                reply(nil, error)
+                let bridged = fs_bridge(error)
+                extensionTrace("createItem FAIL \(path) errno=\(bridged.code) — \(bridged.localizedDescription)")
+                reply(nil, bridged)
             }
         }
     }
@@ -416,16 +438,18 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         queue.async {
             do {
                 try self.ensureSession()
+                // Force-close this item's AFP fork before unlink/rmdir.
+                self.forceCloseOpenFork(item, reason: "removeItem")
                 let itemAttrs = self.attributes(for: item, request: FSRemoveItemResult.requestedAttributes)
-                if item.itemType == .directory {
-                    try self.client.rmdir(item.path)
-                } else {
-                    try self.client.unlink(item.path)
-                }
+                try self.removePath(item)
+                self.itemsByPath.removeValue(forKey: item.path)
+                extensionTrace("removeItem OK \(item.path)")
                 let dirAttrs = self.attributes(for: directory, request: FSRemoveItemResult.requestedAttributes)
                 reply(FSRemoveItemResult(itemAttributes: itemAttrs, directoryAttributes: dirAttrs, freeSpace: nil), nil)
             } catch {
-                reply(nil, error)
+                let bridged = fs_bridge(error)
+                extensionTrace("removeItem FAIL \(item.path) errno=\(bridged.code) — \(bridged.localizedDescription)")
+                reply(nil, bridged)
             }
         }
     }
@@ -452,27 +476,61 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         queue.async {
             do {
                 try self.ensureSession()
-                // Do not delete-then-rename: a failed rename would lose the destination.
-                // AFP replace-on-rename is not guaranteed; refuse overwrite instead.
-                if overItem != nil {
-                    throw fs_error(.EEXIST, "Replace-on-rename is not supported safely over AFP")
+                let attrReq = FSRenameItemResult.requestedAttributes
+                let surviving: AFPItem
+                var overAttrs: FSItem.Attributes?
+
+                if let over = overItem as? AFPItem {
+                    if over.itemType == .directory || item.itemType == .directory {
+                        throw fs_error(.EISDIR, "Replace-on-rename only supports files")
+                    }
+                    // Stock AFP cannot rename-over-existing. POSIX-style replace:
+                    // unlink destination, then rename source (no FPExchangeFiles).
+                    self.forceCloseOpenFork(item, reason: "renameOver/src")
+                    self.forceCloseOpenFork(over, reason: "renameOver/dst")
+                    overAttrs = self.attributes(for: over, request: attrReq)
+                    try self.client.unlink(over.path)
+                    self.itemsByPath.removeValue(forKey: over.path)
+                    let oldPath = item.path
+                    try self.client.rename(from: oldPath, to: newPath)
+                    self.itemsByPath.removeValue(forKey: oldPath)
+                    item.path = newPath
+                    item.name = newName
+                    item.parentID = destinationDirectory.fileID
+                    self.itemsByPath[newPath] = item
+                    surviving = item
+                    extensionTrace("renameOver OK \(oldPath) → \(newPath) (unlink+rename)")
+                } else {
+                    // Keep the same AFPItem (and openState) so a later removeItem can
+                    // force-close the fork. Dropping openState on aside-rename left
+                    // TextEdit .sb-* temps busy → sticky leftovers (-36 / EIO).
+                    let oldPath = item.path
+                    let hadOpen = item.openState != nil
+                    try self.client.rename(from: oldPath, to: newPath)
+                    self.itemsByPath.removeValue(forKey: oldPath)
+                    item.path = newPath
+                    item.name = newName
+                    item.parentID = destinationDirectory.fileID
+                    self.itemsByPath[newPath] = item
+                    surviving = item
+                    extensionTrace(
+                        "rename OK \(oldPath) → \(newPath) openMigrated=\(hadOpen)"
+                    )
                 }
-                try self.client.rename(from: item.path, to: newPath)
-                self.itemsByPath.removeValue(forKey: item.path)
-                let renamed = try self.item(at: newPath, name: newName, parent: destinationDirectory)
+
                 reply(
                     FSRenameItemResult(
                         newName: FSFileName(string: newName),
-                        renamedItemAttributes: self.attributes(for: renamed, request: FSRenameItemResult.requestedAttributes),
-                        sourceDirectoryAttributes: self.attributes(for: sourceDirectory, request: FSRenameItemResult.requestedAttributes),
-                        destinationDirectoryAttributes: self.attributes(for: destinationDirectory, request: FSRenameItemResult.requestedAttributes),
-                        overItemAttributes: nil,
+                        renamedItemAttributes: self.attributes(for: surviving, request: attrReq),
+                        sourceDirectoryAttributes: self.attributes(for: sourceDirectory, request: attrReq),
+                        destinationDirectoryAttributes: self.attributes(for: destinationDirectory, request: attrReq),
+                        overItemAttributes: overAttrs,
                         freeSpace: nil
                     ),
                     nil
                 )
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -508,7 +566,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 _ = try self.ensureOpen(item, writeable: writeable)
                 reply(nil)
             } catch {
-                reply(error)
+                reply(fs_bridge(error))
             }
         }
     }
@@ -558,7 +616,7 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 let attrs = self.attributes(for: item, request: FSReadFileResult.requestedAttributes)
                 reply(FSReadFileResult(bytesRead: written, itemAttributes: attrs), nil)
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -585,9 +643,9 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
                 reply(FSWriteFileResult(bytesWritten: written, itemAttributes: attrs, freeSpace: nil), nil)
             } catch let error as AFPError where error.isSessionStale {
                 self.invalidateSessionLocked()
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             } catch {
-                reply(nil, error)
+                reply(nil, fs_bridge(error))
             }
         }
     }
@@ -807,6 +865,11 @@ final class AFPVolume: FSVolume, FSVolume.Handler, FSVolume.ReadWriteHandler, FS
         if request.isAttributeWanted(.changeTime) { attrs.changeTime = ts }
         if request.isAttributeWanted(.accessTime) { attrs.accessTime = ts }
         if request.isAttributeWanted(.birthTime) { attrs.birthTime = ts }
+        if request.isAttributeWanted(.addedTime) { attrs.addedTime = ts }
+        if request.isAttributeWanted(.backupTime) { attrs.backupTime = ts }
+        if request.isAttributeWanted(.flags) { attrs.flags = 0 }
+        if request.isAttributeWanted(.supportsLimitedXAttrs) { attrs.supportsLimitedXAttrs = true }
+        if request.isAttributeWanted(.inhibitKernelOffloadedIO) { attrs.inhibitKernelOffloadedIO = true }
         return attrs
     }
 

@@ -1,3 +1,4 @@
+import AFPBridge
 import Foundation
 import FSKit
 import os.log
@@ -46,7 +47,7 @@ final class AFPFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             reply(volume, nil)
         } catch {
             log.error("loadResource failed: \(error.localizedDescription, privacy: .public)")
-            reply(nil, error)
+            reply(nil, fs_bridge(error))
         }
     }
 
@@ -67,4 +68,38 @@ func fs_error(_ code: POSIXErrorCode, _ message: String) -> NSError {
         code: Int(code.rawValue),
         userInfo: [NSLocalizedDescriptionKey: message]
     )
+}
+
+/// FSKit requires `NSPOSIXErrorDomain`. Foreign domains (e.g. `AFPBridge.AFPError`)
+/// collapse to EINVAL in VFS — bridge every reply failure through here.
+func fs_bridge(_ error: Error) -> NSError {
+    let ns = error as NSError
+    if ns.domain == NSPOSIXErrorDomain {
+        return ns
+    }
+    if let afp = error as? AFPError {
+        let code: Int32
+        if let errnoCode = afp.rawErrno {
+            code = errnoCode
+        } else {
+            switch afp {
+            case .loginFailed, .credentialsUnavailable:
+                code = EAUTH
+            case .daemonUnavailable, .resumeFailed, .notConnected:
+                code = ENOTCONN
+            case .attachRequiresPassword, .attachFailed:
+                code = EACCES
+            case .passwordTooLong, .fieldTooLong, .invalidURL:
+                code = EINVAL
+            default:
+                code = EIO
+            }
+        }
+        return NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: afp.localizedDescription]
+        )
+    }
+    return fs_error(.EIO, ns.localizedDescription)
 }
